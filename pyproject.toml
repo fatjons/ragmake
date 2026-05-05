@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ragmake"
+version = "0.1.0"
+description = "Stateful RAG kernel with corpus nectar — agents know what's in the corpus before any query runs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["rag", "retrieval", "llm", "stateful", "incremental", "agent", "nectar"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+openai = ["openai>=1.0.0"]
+azure = [
+  "azure-search-documents>=11.6.0",
+  "azure-storage-blob>=12.0.0",
+]
+postgres = [
+  "pgvector>=0.2.0",
+  "psycopg[binary]>=3.1.0",
+]
+
+[project.scripts]
+ragmake-demo = "stateful_rag.demo:main"
+ragmake-benchmark = "stateful_rag.benchmark:main"
+
+[tool.setuptools]
+packages = ["stateful_rag", "stateful_rag.adapters"]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+stateful_rag = "."
+"stateful_rag.adapters" = "adapters"

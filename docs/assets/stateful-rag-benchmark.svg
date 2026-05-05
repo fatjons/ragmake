@@ -1,0 +1,23 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="720" fill="#FBF8F2"/>
+  <text x="80" y="90" font-family="Georgia, serif" font-size="34" fill="#1F2A24">Reference Benchmark</text>
+  <text x="80" y="130" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4D594F">Synthetic 10-document SQLite run comparing stateful recompilation against a stateless baseline.</text>
+
+  <text x="80" y="210" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#1F2A24">Warm reingest skip rate</text>
+  <rect x="80" y="230" width="1000" height="44" rx="14" fill="#E4DDD0"/>
+  <rect x="80" y="230" width="1000" height="44" rx="14" fill="#6D8B63"/>
+  <text x="1100" y="259" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">100%</text>
+
+  <text x="80" y="340" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#1F2A24">Partial-update skip rate</text>
+  <rect x="80" y="360" width="1000" height="44" rx="14" fill="#E4DDD0"/>
+  <rect x="80" y="360" width="800" height="44" rx="14" fill="#AFC99B"/>
+  <text x="900" y="389" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">80%</text>
+
+  <text x="80" y="470" font-family="Helvetica, Arial, sans-serif" font-size="22" font-weight="700" fill="#1F2A24">Embedded texts on partial update</text>
+  <rect x="80" y="500" width="420" height="42" rx="14" fill="#C7D9E8"/>
+  <text x="95" y="527" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Stateful: 5 texts</text>
+  <rect x="80" y="560" width="940" height="42" rx="14" fill="#D9C5A8"/>
+  <text x="95" y="587" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Stateless: 13 texts</text>
+
+  <text x="80" y="655" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#4D594F">Embedding work reduced by 61.5% in the stateful partial-update pass.</text>
+</svg>

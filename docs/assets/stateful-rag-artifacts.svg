@@ -1,0 +1,25 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="720" fill="#F8F7F2"/>
+  <text x="80" y="90" font-family="Georgia, serif" font-size="34" fill="#213126">The Artifact Stack</text>
+  <text x="80" y="130" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#4E5B50">Stateful RAG is not one cache. It is a stack of distinct semantic artifacts.</text>
+
+  <rect x="150" y="180" width="980" height="70" rx="22" fill="#DCECF4"/>
+  <text x="185" y="223" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#1F2A24">1. Evidence Chunks: provenance-aware retrieval units with spans and content identity</text>
+
+  <rect x="190" y="275" width="900" height="70" rx="22" fill="#F3DEC6"/>
+  <text x="225" y="318" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#1F2A24">2. Embedding Cache: content-addressed semantic residue for unchanged chunks</text>
+
+  <rect x="230" y="370" width="820" height="70" rx="22" fill="#E7D6F2"/>
+  <text x="265" y="413" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#1F2A24">3. Freshness Ledger: per-document governance and recompilation policy</text>
+
+  <rect x="270" y="465" width="740" height="70" rx="22" fill="#F2E9B8"/>
+  <text x="305" y="508" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#1F2A24">4. Knowledge Capsule: corpus-level orientation reused for routing and prompting</text>
+
+  <rect x="310" y="560" width="660" height="70" rx="22" fill="#D8E7D2"/>
+  <text x="353" y="603" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="#1F2A24">5. Session Cognition: learned concepts, intents, and decision memory</text>
+
+  <path d="M640 250V270" stroke="#5C675D" stroke-width="4" stroke-linecap="round"/>
+  <path d="M640 345V365" stroke="#5C675D" stroke-width="4" stroke-linecap="round"/>
+  <path d="M640 440V460" stroke="#5C675D" stroke-width="4" stroke-linecap="round"/>
+  <path d="M640 535V555" stroke="#5C675D" stroke-width="4" stroke-linecap="round"/>
+</svg>

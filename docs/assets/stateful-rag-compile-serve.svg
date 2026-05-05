@@ -1,0 +1,54 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="720" fill="#F5F1E8"/>
+  <text x="80" y="80" font-family="Georgia, serif" font-size="34" fill="#1F2A24">Stateful RAG: Compile Plane and Serve Plane</text>
+  <text x="80" y="120" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#485449">Compile once. Reuse often. Refresh only when the state changes.</text>
+
+  <rect x="70" y="170" width="520" height="470" rx="28" fill="#FFF9EF" stroke="#9C8D6A" stroke-width="2"/>
+  <text x="100" y="220" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#6B5B38">Compile Plane</text>
+
+  <rect x="100" y="260" width="180" height="70" rx="16" fill="#D8E7D2"/>
+  <text x="126" y="303" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Raw Documents</text>
+
+  <rect x="340" y="260" width="210" height="70" rx="16" fill="#DCECF4"/>
+  <text x="374" y="303" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Traceable Chunks</text>
+
+  <rect x="100" y="380" width="180" height="70" rx="16" fill="#F3DEC6"/>
+  <text x="121" y="423" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Embedding Cache</text>
+
+  <rect x="340" y="380" width="210" height="70" rx="16" fill="#E7D6F2"/>
+  <text x="387" y="423" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Freshness Ledger</text>
+
+  <rect x="220" y="500" width="210" height="70" rx="16" fill="#F2E9B8"/>
+  <text x="267" y="543" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Knowledge Capsule</text>
+
+  <path d="M280 295H330" stroke="#49554A" stroke-width="4" stroke-linecap="round"/>
+  <path d="M280 415H330" stroke="#49554A" stroke-width="4" stroke-linecap="round"/>
+  <path d="M195 330V370" stroke="#49554A" stroke-width="4" stroke-linecap="round"/>
+  <path d="M445 330V370" stroke="#49554A" stroke-width="4" stroke-linecap="round"/>
+  <path d="M320 450V495" stroke="#49554A" stroke-width="4" stroke-linecap="round"/>
+
+  <rect x="690" y="170" width="520" height="470" rx="28" fill="#F9FBF6" stroke="#7C9A7A" stroke-width="2"/>
+  <text x="720" y="220" font-family="Helvetica, Arial, sans-serif" font-size="24" font-weight="700" fill="#486344">Serve Plane</text>
+
+  <rect x="720" y="260" width="180" height="70" rx="16" fill="#DCECF4"/>
+  <text x="773" y="303" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">User Query</text>
+
+  <rect x="960" y="260" width="190" height="70" rx="16" fill="#D8E7D2"/>
+  <text x="998" y="303" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Vector Retrieval</text>
+
+  <rect x="720" y="380" width="180" height="70" rx="16" fill="#F2E9B8"/>
+  <text x="734" y="423" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Knowledge Capsule</text>
+
+  <rect x="960" y="380" width="190" height="70" rx="16" fill="#F3DEC6"/>
+  <text x="1015" y="423" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Evidence Chunks</text>
+
+  <rect x="840" y="500" width="190" height="70" rx="16" fill="#E7D6F2"/>
+  <text x="861" y="543" font-family="Helvetica, Arial, sans-serif" font-size="20" fill="#1F2A24">Prompt Context Builder</text>
+
+  <path d="M900 295H950" stroke="#49554A" stroke-width="4" stroke-linecap="round"/>
+  <path d="M810 450L900 500" stroke="#49554A" stroke-width="4" stroke-linecap="round"/>
+  <path d="M1055 450L980 500" stroke="#49554A" stroke-width="4" stroke-linecap="round"/>
+
+  <path d="M590 535H685" stroke="#8A7155" stroke-width="5" stroke-dasharray="10 10" stroke-linecap="round"/>
+  <text x="600" y="515" font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#6B5B38">compiled state reused at runtime</text>
+</svg>
