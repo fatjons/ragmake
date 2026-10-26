@@ -1,183 +1,144 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import asdict
 from datetime import datetime, timezone
+from typing import Iterable
+from urllib.parse import quote
 
-from .chunking import WordChunker
-from .interfaces import ArtifactStore, Embedder, SynopsisCompiler, VectorStore
-from .models import CorpusSynopsis, IngestionReport, LedgerEntry, SourceDocument
-
-
-class StatefulRAGCompiler:
-    """Compile raw documents into reusable RAG state, including corpus nectar.
-
-    The compiler tracks document and chunk hashes so unchanged content is never
-    reprocessed. On each ingest it recomputes the corpus content signature and
-    rebuilds the corpus synopsis (nectar) only when that signature changes.
-    """
-
-    def __init__(
-        self,
-        artifact_store: ArtifactStore,
-        vector_store: VectorStore,
-        embedder: Embedder,
-        synopsis_compiler: SynopsisCompiler,
-        chunker: WordChunker | None = None,
-        namespace: str = ".stateful_rag",
-    ):
-        self.artifact_store = artifact_store
-        self.vector_store = vector_store
-        self.embedder = embedder
-        self.synopsis_compiler = synopsis_compiler
-        self.chunker = chunker or WordChunker()
-        self.namespace = namespace.rstrip("/")
-
-    def ingest_documents(
-        self,
-        documents: list[SourceDocument],
-        force: bool = False,
-        rebuild_synopses: bool = True,
-    ) -> IngestionReport:
-        report = IngestionReport()
-        touched_corpora: set[str] = set()
-
-        for document in documents:
-            document_hash = hashlib.sha256(document.text.encode("utf-8")).hexdigest()
-            ledger_path = self._ledger_path(document.corpus_id, document.document_id)
-            existing_data = self.artifact_store.read_json(ledger_path)
-            existing_entry = LedgerEntry.from_dict(existing_data) if existing_data else None
-
-            if existing_entry and existing_entry.document_hash == document_hash and not force:
-                report.skipped_documents += 1
-                continue
-
-            if existing_entry and existing_entry.chunk_ids:
-                self.vector_store.delete_chunk_ids(existing_entry.chunk_ids)
-
-            chunks = self.chunker.chunk(document)
-            vectors = self._embed_chunks(chunks)
-            self.vector_store.upsert_chunks(chunks, vectors)
-
-            now = _utcnow()
-            entry = LedgerEntry(
-                corpus_id=document.corpus_id,
-                document_id=document.document_id,
-                document_hash=document_hash,
-                chunk_count=len(chunks),
-                chunk_ids=[chunk.chunk_key for chunk in chunks],
-                chunk_hashes=[chunk.content_hash for chunk in chunks],
-                metadata=dict(document.metadata),
-                created_at=existing_entry.created_at if existing_entry else now,
-                updated_at=now,
-            )
-            self.artifact_store.write_json(ledger_path, asdict(entry))
-
-            touched_corpora.add(document.corpus_id)
-            report.processed_documents += 1
-            report.chunks_upserted += len(chunks)
-
-        if rebuild_synopses:
-            for corpus_id in sorted(touched_corpora):
-                refreshed = self.refresh_synopsis(corpus_id)
-                if refreshed is not None:
-                    report.synopses_rebuilt.append(corpus_id)
-
-        return report
-
-    def refresh_synopsis(
-        self,
-        corpus_id: str,
-        max_chunks: int = 64,
-    ) -> CorpusSynopsis | None:
-        content_signature, document_count, chunk_count = self._compute_content_signature(corpus_id)
-        if document_count == 0:
-            return None
-
-        synopsis_path = self._synopsis_path(corpus_id)
-        existing_data = self.artifact_store.read_json(synopsis_path)
-        existing = CorpusSynopsis.from_dict(existing_data) if existing_data else None
-
-        if existing and existing.content_signature == content_signature:
-            return existing
-
-        chunks = self.vector_store.list_chunks(corpus_id, limit=max_chunks)
-        synopsis_text = self.synopsis_compiler.compile_synopsis(
-            corpus_id=corpus_id,
-            chunks=chunks,
-            previous_synopsis=existing.synopsis_text if existing else None,
-        )
-        now = _utcnow()
-        synopsis = CorpusSynopsis(
-            corpus_id=corpus_id,
-            content_signature=content_signature,
-            document_count=document_count,
-            chunk_count=chunk_count,
-            synopsis_text=synopsis_text,
-            created_at=existing.created_at if existing else now,
-            updated_at=now,
-        )
-        self.artifact_store.write_json(synopsis_path, asdict(synopsis))
-        return synopsis
-
-    def load_synopsis(self, corpus_id: str) -> CorpusSynopsis | None:
-        data = self.artifact_store.read_json(self._synopsis_path(corpus_id))
-        return CorpusSynopsis.from_dict(data) if data else None
-
-    def load_ledger_entry(self, corpus_id: str, document_id: str) -> LedgerEntry | None:
-        data = self.artifact_store.read_json(self._ledger_path(corpus_id, document_id))
-        return LedgerEntry.from_dict(data) if data else None
-
-    def _embed_chunks(self, chunks) -> list[list[float]]:
-        vectors: list[list[float] | None] = [None] * len(chunks)
-        missing_indices: list[int] = []
-        missing_texts: list[str] = []
-
-        for index, chunk in enumerate(chunks):
-            cache_path = self._embedding_path(chunk.content_hash)
-            cached = self.artifact_store.read_json(cache_path)
-            if isinstance(cached, list):
-                vectors[index] = [float(value) for value in cached]
-                continue
-            missing_indices.append(index)
-            missing_texts.append(chunk.text)
-
-        if missing_texts:
-            embedded = self.embedder.embed_texts(missing_texts)
-            for vector, index in zip(embedded, missing_indices):
-                vectors[index] = [float(value) for value in vector]
-                self.artifact_store.write_json(
-                    self._embedding_path(chunks[index].content_hash),
-                    vectors[index],
-                )
-
-        return [vector if vector is not None else [] for vector in vectors]
-
-    def _compute_content_signature(self, corpus_id: str) -> tuple[str, int, int]:
-        records = []
-        chunk_count = 0
-        for _, data in self.artifact_store.iter_json(self._ledger_prefix(corpus_id)):
-            entry = LedgerEntry.from_dict(data)
-            chunk_count += entry.chunk_count
-            records.append(f"{entry.document_id}|{entry.document_hash}")
-        records.sort()
-        hasher = hashlib.sha256()
-        for record in records:
-            hasher.update(record.encode("utf-8"))
-        return hasher.hexdigest(), len(records), chunk_count
-
-    def _ledger_prefix(self, corpus_id: str) -> str:
-        return f"{self.namespace}/ledger/{corpus_id}"
-
-    def _ledger_path(self, corpus_id: str, document_id: str) -> str:
-        return f"{self._ledger_prefix(corpus_id)}/{document_id}.json"
-
-    def _embedding_path(self, content_hash: str) -> str:
-        return f"{self.namespace}/cache/embeddings/{content_hash}.json"
-
-    def _synopsis_path(self, corpus_id: str) -> str:
-        return f"{self.namespace}/synopses/{corpus_id}.json"
+from .chunking import Chunker
+from .interfaces import ArtifactStore, Embedder, NectarCompiler, VectorStore
+from .models import Chunk, Document, IngestReport, LedgerEntry, Nectar
 
 
 def _utcnow() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _q(x: str) -> str:
+    return quote(x, safe="")
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+class Compiler:
+    def __init__(self, artifacts: ArtifactStore, vectors: VectorStore, embedder: Embedder,
+                 nectar: NectarCompiler, chunker: Chunker | None = None, namespace: str = "ragmake"):
+        self.artifacts, self.vectors, self.embedder, self.nectar = artifacts, vectors, embedder, nectar
+        self.chunker = chunker or Chunker()
+        self.ns = namespace
+        # The toolchain is a build input: changing any of it rebuilds every document.
+        self.recipe = [embedder.name, self.chunker.name, nectar.name]
+
+    def _ledger_path(self, corpus_id: str, document_id: str) -> str:
+        return f"{self.ns}/ledger/{_q(corpus_id)}/{_q(document_id)}.json"
+
+    def _entries(self, corpus_id: str) -> list[LedgerEntry]:
+        prefix = f"{self.ns}/ledger/{_q(corpus_id)}/"  # trailing "/" so corpus "abc" misses "abcd"
+        return sorted((LedgerEntry(**d) for _, d in self.artifacts.iter_json(prefix)), key=lambda e: e.document_id)
+
+    def ledger(self, corpus_id: str, document_id: str) -> LedgerEntry | None:
+        data = self.artifacts.read_json(self._ledger_path(corpus_id, document_id))
+        return LedgerEntry(**data) if data else None
+
+    def load_nectar(self, corpus_id: str) -> Nectar | None:
+        data = self.artifacts.read_json(f"{self.ns}/nectar/{_q(corpus_id)}.json")
+        return Nectar(**data) if data else None
+
+    def ingest(self, documents: Iterable[Document], *, force: bool = False, prune: bool = False) -> IngestReport:
+        report = IngestReport()
+        seen: dict[str, set[str]] = {}
+        touched: set[str] = set()
+        for doc in documents:
+            seen.setdefault(doc.corpus_id, set()).add(doc.document_id)
+            if self._process(doc, force, report):
+                touched.add(doc.corpus_id)
+        if prune:
+            for corpus_id, ids in seen.items():
+                gone = [e.document_id for e in self._entries(corpus_id) if e.document_id not in ids]
+                if self._remove(corpus_id, gone, report):
+                    touched.add(corpus_id)
+        for corpus_id in sorted(touched):
+            if self._refresh(corpus_id, False)[1]:
+                report.nectars_rebuilt.append(corpus_id)
+        return report
+
+    def remove(self, corpus_id: str, document_ids: Iterable[str]) -> int:
+        report = IngestReport()
+        if self._remove(corpus_id, document_ids, report):
+            self._refresh(corpus_id, False)
+        return report.removed
+
+    def refresh_nectar(self, corpus_id: str, force: bool = False) -> Nectar | None:
+        return self._refresh(corpus_id, force)[0]
+
+    def _process(self, doc: Document, force: bool, report: IngestReport) -> bool:
+        document_hash = _sha(json.dumps([doc.title, doc.text, doc.metadata, self.recipe], sort_keys=True))
+        old = self.ledger(doc.corpus_id, doc.document_id)
+        if old and old.document_hash == document_hash and not force:
+            report.skipped += 1
+            return False
+        chunks = self.chunker.chunk(doc)
+        stale = sorted(set(old.chunk_keys if old else ()) - {c.key for c in chunks})
+        vectors = self._embed(chunks, report)
+        if stale:
+            self.vectors.delete_chunks(stale)
+        self.vectors.upsert_chunks(chunks, vectors)
+        entry = LedgerEntry(doc.corpus_id, doc.document_id, document_hash, doc.title,
+                            self.nectar.digest(doc), [c.key for c in chunks], _utcnow())
+        self.artifacts.write_json(self._ledger_path(doc.corpus_id, doc.document_id), asdict(entry))
+        report.processed += 1
+        report.chunks_upserted += len(chunks)
+        report.chunks_deleted += len(stale)
+        return True
+
+    def _embed(self, chunks: list[Chunk], report: IngestReport) -> list[list[float]]:
+        def path(content_hash: str) -> str:
+            return f"{self.ns}/embeddings/{_q(self.embedder.name)}/{content_hash}.json"
+
+        vecs = {c.content_hash: self.artifacts.read_json(path(c.content_hash)) for c in chunks}
+        todo = {c.content_hash: c.text for c in chunks if vecs[c.content_hash] is None}
+        if todo:
+            fresh = self.embedder.embed_texts(list(todo.values()))
+            if len(fresh) != len(todo):
+                raise ValueError(f"embedder returned {len(fresh)} vectors for {len(todo)} texts")
+            for content_hash, vector in zip(todo, fresh):
+                vecs[content_hash] = list(vector)
+                self.artifacts.write_json(path(content_hash), vecs[content_hash])
+            report.embedded += len(todo)
+        return [vecs[c.content_hash] for c in chunks]
+
+    def _remove(self, corpus_id: str, document_ids: Iterable[str], report: IngestReport) -> int:
+        removed = 0
+        for document_id in document_ids:
+            entry = self.ledger(corpus_id, document_id)
+            if entry is None:
+                continue
+            self.vectors.delete_chunks(entry.chunk_keys)
+            self.artifacts.delete(self._ledger_path(corpus_id, document_id))
+            report.chunks_deleted += len(entry.chunk_keys)
+            removed += 1
+        report.removed += removed
+        return removed
+
+    def _refresh(self, corpus_id: str, force: bool) -> tuple[Nectar | None, bool]:
+        """Return (nectar, rebuilt)."""
+        entries = self._entries(corpus_id)
+        path = f"{self.ns}/nectar/{_q(corpus_id)}.json"
+        if not entries:
+            self.artifacts.delete(path)
+            return None, False
+        signature = _sha(json.dumps([[e.document_id, e.document_hash] for e in entries]))
+        stored = self.load_nectar(corpus_id)
+        if stored and stored.signature == signature and not force:
+            return stored, False
+        text = self.nectar.reduce(corpus_id, [(e.document_id, e.digest) for e in entries],
+                                  stored.text if stored else None)
+        catalog = [{"document_id": e.document_id, "title": e.title, "digest": e.digest} for e in entries]
+        nectar = Nectar(corpus_id, signature, len(entries), sum(len(e.chunk_keys) for e in entries),
+                        text, catalog, _utcnow())
+        self.artifacts.write_json(path, asdict(nectar))
+        return nectar, True

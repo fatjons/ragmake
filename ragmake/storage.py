@@ -2,121 +2,83 @@ from __future__ import annotations
 
 import json
 import math
-from collections import defaultdict
-from dataclasses import asdict
+import os
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterator, Sequence
 
-from .models import ChunkRecord, RetrievedChunk
+from .models import Chunk, Hit
+
+
+def normalize(vec: Sequence[float]) -> list[float]:
+    norm = math.sqrt(sum(x * x for x in vec))
+    return [x / norm for x in vec] if norm else [0.0] * len(vec)
 
 
 class FileArtifactStore:
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | os.PathLike):
         self.root = Path(root)
 
+    def _path(self, rel: str) -> Path:
+        if rel.startswith("/") or ".." in rel.split("/"):
+            raise ValueError(f"unsafe artifact path: {rel!r}")
+        return self.root / rel
+
     def read_json(self, path: str) -> Any | None:
-        file_path = self.root / path
-        if not file_path.exists():
+        try:
+            return json.loads(self._path(path).read_text(encoding="utf-8"))
+        except FileNotFoundError:
             return None
-        return json.loads(file_path.read_text(encoding="utf-8"))
 
     def write_json(self, path: str, data: Any) -> None:
-        file_path = self.root / path
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(json.dumps(data, ensure_ascii=True, indent=2), encoding="utf-8")
+        target = self._path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_name(target.name + ".tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, target)
 
-    def iter_json(self, prefix: str) -> Iterable[tuple[str, Any]]:
-        base = self.root / prefix
-        if not base.exists():
-            return []
-        items: list[tuple[str, Any]] = []
-        for file_path in sorted(base.rglob("*.json")):
-            relative = file_path.relative_to(self.root).as_posix()
-            items.append((relative, json.loads(file_path.read_text(encoding="utf-8"))))
-        return items
+    def iter_json(self, prefix: str) -> Iterator[tuple[str, Any]]:
+        base = self._path(prefix + "x").parent  # deepest directory the prefix can match in
+        for file in sorted(base.rglob("*.json")) if base.is_dir() else ():
+            rel = file.relative_to(self.root).as_posix()
+            if rel.startswith(prefix):
+                yield rel, json.loads(file.read_text(encoding="utf-8"))
 
     def delete(self, path: str) -> None:
-        file_path = self.root / path
-        if file_path.exists():
-            file_path.unlink()
+        self._path(path).unlink(missing_ok=True)
 
 
-class InMemoryArtifactStore:
+class MemoryArtifactStore:
     def __init__(self):
-        self._items: dict[str, Any] = {}
+        self.data: dict[str, str] = {}  # serialized, so callers never share mutable state
 
     def read_json(self, path: str) -> Any | None:
-        return self._items.get(path)
+        return json.loads(self.data[path]) if path in self.data else None
 
     def write_json(self, path: str, data: Any) -> None:
-        self._items[path] = json.loads(json.dumps(data))
+        self.data[path] = json.dumps(data)
 
-    def iter_json(self, prefix: str) -> Iterable[tuple[str, Any]]:
-        return [
-            (path, value)
-            for path, value in sorted(self._items.items())
-            if path.startswith(prefix)
-        ]
+    def iter_json(self, prefix: str) -> Iterator[tuple[str, Any]]:
+        for path in sorted(p for p in self.data if p.startswith(prefix)):
+            yield path, json.loads(self.data[path])
 
     def delete(self, path: str) -> None:
-        self._items.pop(path, None)
+        self.data.pop(path, None)
 
 
-class InMemoryVectorStore:
+class MemoryVectorStore:
     def __init__(self):
-        self._chunks: dict[str, ChunkRecord] = {}
-        self._vectors: dict[str, list[float]] = {}
-        self._corpora: dict[str, set[str]] = defaultdict(set)
+        self.rows: dict[str, tuple[Chunk, list[float]]] = {}
 
-    def upsert_chunks(
-        self,
-        chunks: Sequence[ChunkRecord],
-        vectors: Sequence[Sequence[float]],
-    ) -> None:
+    def upsert_chunks(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
         for chunk, vector in zip(chunks, vectors):
-            self._chunks[chunk.chunk_key] = ChunkRecord(**asdict(chunk))
-            self._vectors[chunk.chunk_key] = [float(value) for value in vector]
-            self._corpora[chunk.corpus_id].add(chunk.chunk_key)
+            self.rows[chunk.key] = (chunk, normalize(vector))
 
-    def delete_chunk_ids(self, chunk_ids: Sequence[str]) -> None:
-        for chunk_id in chunk_ids:
-            chunk = self._chunks.pop(chunk_id, None)
-            self._vectors.pop(chunk_id, None)
-            if chunk:
-                keys = self._corpora.get(chunk.corpus_id)
-                if keys:
-                    keys.discard(chunk_id)
+    def delete_chunks(self, keys: Sequence[str]) -> None:
+        for key in keys:
+            self.rows.pop(key, None)
 
-    def list_chunks(self, corpus_id: str, limit: int | None = None) -> list[ChunkRecord]:
-        keys = sorted(
-            self._corpora.get(corpus_id, set()),
-            key=lambda key: (
-                self._chunks[key].document_id,
-                self._chunks[key].chunk_id,
-            ),
-        )
-        if limit is not None:
-            keys = keys[:limit]
-        return [ChunkRecord(**asdict(self._chunks[key])) for key in keys]
-
-    def search(
-        self,
-        corpus_id: str,
-        query_vector: Sequence[float],
-        top_k: int,
-    ) -> list[RetrievedChunk]:
-        scores: list[RetrievedChunk] = []
-        for chunk_id in self._corpora.get(corpus_id, set()):
-            score = _cosine_similarity(query_vector, self._vectors[chunk_id])
-            scores.append(RetrievedChunk(chunk=ChunkRecord(**asdict(self._chunks[chunk_id])), score=score))
-        scores.sort(key=lambda item: item.score, reverse=True)
-        return scores[:top_k]
-
-
-def _cosine_similarity(left: Sequence[float], right: Sequence[float]) -> float:
-    dot = sum(float(a) * float(b) for a, b in zip(left, right))
-    left_norm = math.sqrt(sum(float(value) * float(value) for value in left))
-    right_norm = math.sqrt(sum(float(value) * float(value) for value in right))
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return dot / (left_norm * right_norm)
+    def search(self, corpus_id: str, vector: Sequence[float], top_k: int) -> list[Hit]:
+        q = normalize(vector)
+        hits = [Hit(c, sum(a * b for a, b in zip(q, v)))
+                for c, v in self.rows.values() if c.corpus_id == corpus_id]
+        return sorted(hits, key=lambda h: -h.score)[:top_k]

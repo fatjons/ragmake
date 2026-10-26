@@ -38,7 +38,7 @@ class LedgerEntry:
 
     corpus_id: str
     document_id: str
-    document_hash: str  # covers title, text and metadata
+    document_hash: str  # covers title, text, metadata and the build recipe
     title: str | None
     digest: str  # per-document nectar
     chunk_keys: list[str]

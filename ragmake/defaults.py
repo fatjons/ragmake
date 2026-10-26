@@ -1,86 +1,66 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import re
 from collections import Counter
 from typing import Sequence
 
-from .models import ChunkRecord
+from .models import Document
+from .storage import normalize
 
-
-_WORD_RE = re.compile(r"[a-zA-Z0-9_]{3,}")
+_STOPWORDS = frozenset(
+    "a about above after again all also am an and any are as at be because been before being below between both but "
+    "by can could did do does doing down during each few for from further had has have having he her here hers him his "
+    "how i if in into is it its just me more most my no nor not now of off on once only or other our out over own same "
+    "she should so some such than that the their them then there these they this those through to too under until up "
+    "very was we were what when where which while who whom why will with would you your".split()
+)
+_WORD = re.compile(r"[a-z0-9_]{2,}")
 
 
 class HashingEmbedder:
-    """Deterministic fallback embedder for local demos and tests.
-
-    Not suitable for production semantic search.
-    """
-
-    def __init__(self, dimensions: int = 64):
-        if dimensions <= 0:
-            raise ValueError("dimensions must be > 0")
+    def __init__(self, dimensions: int = 256):
         self.dimensions = dimensions
+        self.name = f"hashing-{dimensions}"
 
     def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
-        return [self._embed(text) for text in texts]
-
-    def _embed(self, text: str) -> list[float]:
-        vector = [0.0] * self.dimensions
-        words = _WORD_RE.findall(text.lower())
-        if not words:
-            return vector
-
-        for word in words:
-            digest = hashlib.sha256(word.encode("utf-8")).digest()
-            index = int.from_bytes(digest[:4], "big") % self.dimensions
-            sign = 1.0 if digest[4] % 2 == 0 else -1.0
-            vector[index] += sign
-
-        norm = math.sqrt(sum(value * value for value in vector))
-        if norm == 0:
-            return vector
-        return [value / norm for value in vector]
+        out = []
+        for text in texts:
+            vec = [0.0] * self.dimensions
+            for word in _WORD.findall(text.lower()):
+                h = hashlib.sha256(word.encode()).digest()
+                vec[int.from_bytes(h[:4], "big") % self.dimensions] += 1.0 if h[4] & 1 else -1.0
+            out.append(normalize(vec))
+        return out
 
 
-class HeuristicSynopsisCompiler:
-    """LLM-free nectar compiler for local demos and tests.
+class HeuristicNectar:
+    def __init__(self, max_terms: int = 10, lead_chars: int = 240, budget_chars: int = 8000):
+        self.max_terms, self.lead_chars, self.budget_chars = max_terms, lead_chars, budget_chars
+        self.name = f"heuristic-{max_terms}-{lead_chars}-{budget_chars}"
 
-    Produces a deterministic corpus synopsis from top terms and chunk excerpts.
-    Use OpenAISynopsisCompiler for semantic, LLM-written nectar in production.
-    """
+    def digest(self, document: Document) -> str:
+        text = " ".join(document.text.split())
+        lead = text[: self.lead_chars]
+        if len(text) > self.lead_chars and (i := lead.rfind(". ")) > 0:
+            lead = lead[:i]
+        words = [w for w in _WORD.findall(text.lower()) if len(w) >= 3 and w not in _STOPWORDS]
+        terms = ", ".join(w for w, _ in Counter(words).most_common(self.max_terms))
+        title = f"{document.title}: " if document.title else ""  # the id is already beside the digest
+        return f"{title}{lead.rstrip('. ')}. Key terms: {terms}"
 
-    def __init__(self, max_points: int = 8, excerpt_chars: int = 180):
-        self.max_points = max_points
-        self.excerpt_chars = excerpt_chars
-
-    def compile_synopsis(
-        self,
-        corpus_id: str,
-        chunks: Sequence[ChunkRecord],
-        previous_synopsis: str | None = None,
-    ) -> str:
-        doc_ids = sorted({chunk.document_id for chunk in chunks})
-        terms = Counter()
-        for chunk in chunks:
-            terms.update(_WORD_RE.findall(chunk.text.lower()))
-
-        top_terms = ", ".join(term for term, _ in terms.most_common(12))
-        lines = [
-            f"Corpus: {corpus_id}",
-            f"Documents: {len(doc_ids)}",
-            f"Chunks: {len(chunks)}",
-        ]
-        if top_terms:
-            lines.append(f"Representative terms: {top_terms}")
-
-        for chunk in chunks[: self.max_points]:
-            excerpt = " ".join(chunk.text.split())
-            excerpt = excerpt[: self.excerpt_chars].rstrip()
-            lines.append(f"- {chunk.document_id}#{chunk.chunk_id}: {excerpt}")
-
-        if previous_synopsis and previous_synopsis not in lines:
-            lines.append("Synopsis refreshed from prior compiled state.")
-
+    def reduce(self, corpus_id: str, digests: Sequence[tuple[str, str]], previous: str | None) -> str:
+        recurring = Counter(t for _, d in digests for t in set(d.rpartition("Key terms: ")[2].split(", ")) if t)
+        lines = [f"Corpus {corpus_id}: {len(digests)} documents.",
+                 "Recurring terms: " + ", ".join(t for t, _ in recurring.most_common(self.max_terms)),
+                 "Documents:"]
+        tail = f"- ... and {len(digests)} more documents"  # longest possible; reserved so the budget holds
+        size = sum(len(line) + 1 for line in lines) + len(tail) + 1
+        for i, (doc_id, digest) in enumerate(digests):
+            line = f"- {doc_id}: {digest}"
+            if size + len(line) + 1 > self.budget_chars:
+                lines.append(f"- ... and {len(digests) - i} more documents")
+                break
+            lines.append(line)
+            size += len(line) + 1
         return "\n".join(lines)

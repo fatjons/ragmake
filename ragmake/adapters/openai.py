@@ -35,6 +35,7 @@ class OpenAINectar:
                  temperature: float = 0.1, max_tokens: int = 700):
         self.client, self.model, self.doc_chars, self.budget_chars = client, model, doc_chars, budget_chars
         self.temperature, self.max_tokens = temperature, max_tokens
+        self.name = f"openai:{model}:{doc_chars}:{budget_chars}"
 
     def _chat(self, system: str, user: str) -> str:
         resp = self.client.chat.completions.create(

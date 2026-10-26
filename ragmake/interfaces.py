@@ -27,5 +27,7 @@ class VectorStore(Protocol):
 
 
 class NectarCompiler(Protocol):
+    name: str  # part of the build recipe: must change whenever digests would
+
     def digest(self, document: Document) -> str: ...
     def reduce(self, corpus_id: str, digests: Sequence[tuple[str, str]], previous: str | None) -> str: ...
