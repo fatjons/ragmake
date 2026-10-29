@@ -4,303 +4,180 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
-**RAG without corpus memory is blind guessing.**
+**RAG without corpus memory is blind guessing.** A retriever hands the agent the chunks that
+scored highest for one query, and the agent never learns what the corpus contains.
 
-Standard retrieval pipelines give an agent whatever chunks scored highest for a
-query. The agent has no idea what the corpus actually contains — it reasons from
-fragments and hopes the retriever surfaced the right ones. Every run starts from
-zero, re-embedding everything, recomputing everything, knowing nothing.
+ragmake compiles documents into persistent state, like `make`: unchanged inputs are never
+reprocessed. At query time the agent gets **nectar** (what the corpus is) and **evidence**
+(what is relevant to this query).
 
-ragmake changes the equation.
+## How it works
 
-It compiles your documents into persistent state and distills a **nectar** — a
-corpus-level synthesis that tells the agent what the corpus _is_, not just what
-a query happened to surface. Nectar is compiled once and refreshed only when
-content changes. The agent walks into every conversation already knowing the
-terrain.
+```
+document --> chunks --> embeddings     cached by (embedder name, chunk content hash)
+    |
+    +------> digest                    rebuilt when the document hash changes
+                |
+all digests +--> nectar + catalog      rebuilt when the corpus signature changes
+```
 
-![Compile plane and serve plane](docs/assets/stateful-rag-compile-serve.svg)
-
----
-
-## The core idea: nectar
-
-In a standard RAG pipeline the agent is reactive. It sees retrieved chunks and
-has to infer the shape of the corpus from those fragments alone. If retrieval
-misses something relevant, the agent never knew it existed.
-
-ragmake adds a proactive layer. Before any query runs, the compiler reads the
-entire corpus and distills it into nectar: the scope, dominant concepts, recurring
-terminology, and document set — all in one compact, pre-built summary. Nectar is
-not a retrieval result. It exists independently of any query and persists across
-runs.
-
-At query time ragmake assembles two things for the agent:
-
-| Layer        | What it is                                                | When it's built                                      |
-| ------------ | --------------------------------------------------------- | ---------------------------------------------------- |
-| **Nectar**   | What the corpus contains — its scope, concepts, and shape | Compile time. Cached. Rebuilt only on corpus change. |
-| **Evidence** | What's specifically relevant to this query                | Query time. Retrieved from the vector store.         |
-
-Together they give the agent both the map and the territory. The agent doesn't
-have to guess what the knowledge base covers — it already knows.
-
----
-
-## What "stateful" means
-
-ragmake builds persistent state from your documents and reuses it. Nothing is
-recomputed unless content has actually changed:
-
-- **Document hash check** — unchanged documents are skipped entirely
-- **Chunk embedding cache** — unchanged chunks within a changed document reuse cached vectors
-- **Corpus signature** — nectar is rebuilt only when the set of document hashes changes
-
-Only changed content costs anything. Everything else is free on re-ingest.
-
-![Artifact stack](docs/assets/stateful-rag-artifacts.svg)
-
-This is the "make" in ragmake. Like a build system, it tracks what changed and
-only rebuilds those targets. The rest of the state is reused as-is.
-
----
+- The **document hash** covers title, text, metadata and the build recipe (embedder, chunker
+  and nectar compiler names). Changing the toolchain rebuilds every document.
+- The **corpus signature** is a hash of the sorted `(document_id, document_hash)` pairs.
+- Chunking is content-defined, so an edit changes nearby chunks and leaves the rest alone.
+- Deletes are explicit: `ingest(..., prune=True)` removes documents missing from the ingest,
+  `compiler.remove(corpus_id, ids)` removes named ones. Their chunks go too.
+- Reingesting unchanged documents calls the embedder and nectar compiler zero times.
 
 ## Install
 
-Python 3.11+ required.
+Python 3.11+. The core is stdlib only.
 
 ```bash
-pip install ragmake
+pip install -e .                 # core
+pip install -e '.[openai]'       # OpenAI embeddings and nectar
+pip install -e '.[postgres]'     # pgvector + psycopg
+pip install -e '.[azure]'        # Azure Blob + Azure AI Search
 ```
 
-Optional extras:
+## CLI
 
 ```bash
-pip install 'ragmake[openai]'    # OpenAI-compatible embeddings and synopsis
-pip install 'ragmake[azure]'     # Azure Blob + Azure AI Search
-pip install 'ragmake[postgres]'  # Postgres + pgvector
+ragmake ingest docs/                  # every .txt and .md under docs/, recursively
+ragmake ingest docs/ --prune          # also delete documents no longer under docs/
+ragmake query "What changed in the refund policy?" --top-k 5
+ragmake nectar                        # print the corpus nectar and catalog
 ```
 
-Or from source:
+Global flags go before the subcommand: `--state DIR` (default `.ragmake`, holds `ragmake.db`),
+`--corpus ID` (default `default`), and `--openai`, which reads `OPENAI_API_KEY`,
+`OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`) and `OPENAI_CHAT_MODEL`
+(default `gpt-4o-mini`).
 
-```bash
-pip install -e .
-```
+Queries must use the same embedder as the ingest that built the state. Never mix `--openai`
+and the default embedder on one state directory: each switch rebuilds everything.
 
----
-
-## Quick start
+## Python: local, no dependencies
 
 ```python
-from pathlib import Path
+from ragmake import Compiler, Document, HashingEmbedder, HeuristicNectar, MemoryArtifactStore, MemoryVectorStore, Runtime
 
-from stateful_rag import (
-    FileArtifactStore,
-    HashingEmbedder,
-    HeuristicSynopsisCompiler,
-    InMemoryVectorStore,
-    SourceDocument,
-    StatefulRAGCompiler,
-    StatefulRAGRuntime,
-    WordChunker,
-)
-
-# Build the compiler — this is what creates and maintains corpus state
-compiler = StatefulRAGCompiler(
-    artifact_store=FileArtifactStore(Path(".ragmake_state")),
-    vector_store=InMemoryVectorStore(),
-    embedder=HashingEmbedder(),
-    synopsis_compiler=HeuristicSynopsisCompiler(),
-    chunker=WordChunker(max_words=120, overlap_words=20),
-)
-
-# Ingest documents — nectar is compiled after this
-compiler.ingest_documents([
-    SourceDocument(
-        corpus_id="support-kb",
-        document_id="refund-policy.txt",
-        text="Enterprise refunds are allowed within 30 days when the onboarding pack is unused.",
-    ),
-    SourceDocument(
-        corpus_id="support-kb",
-        document_id="api-access.txt",
-        text="Workspace admins can rotate API keys from the admin console.",
-    ),
-])
-
-# Build the runtime — this is what the agent uses at query time
-runtime = StatefulRAGRuntime(
-    compiler=compiler,
-    vector_store=compiler.vector_store,
-    embedder=compiler.embedder,
-)
-
-# The agent receives nectar (what the corpus is) + evidence (what's relevant)
-context = runtime.build_context(
-    "What do I need for an enterprise refund?",
-    corpus_id="support-kb",
-)
-payload = runtime.render_prompt_payload(context)
-
-# payload["synopsis"] — the nectar: corpus-level memory, query-independent
-# payload["sources"]  — the evidence: top matching chunks for this query
+documents = [
+    Document("support-kb", "refund-policy.txt",
+             "Enterprise refunds are allowed within 30 days when the onboarding pack is unused."),
+    Document("support-kb", "api-access.txt", "Workspace admins can rotate API keys from the admin console."),
+]
+compiler = Compiler(MemoryArtifactStore(), MemoryVectorStore(), HashingEmbedder(), HeuristicNectar())
+compiler.ingest(documents)
+context = Runtime(compiler).context("What do I need for an enterprise refund?", "support-kb")
 ```
 
-Reingest the same documents unchanged — zero embedder calls, nectar unchanged,
-state fully reused.
-
----
-
-## With a real embedder (OpenAI)
+## Python: persistent, with OpenAI
 
 ```python
 from openai import OpenAI
-from stateful_rag.adapters import OpenAICompatibleEmbedder, OpenAISynopsisCompiler, SQLiteArtifactStore, SQLiteVectorStore
+from ragmake import Compiler, Runtime
+from ragmake.adapters.openai import OpenAIEmbedder, OpenAINectar
+from ragmake.adapters.sqlite import SQLiteArtifactStore, SQLiteVectorStore
 
-client = OpenAI(api_key="...")
-
-compiler = StatefulRAGCompiler(
-    artifact_store=SQLiteArtifactStore(".ragmake/state.db"),
-    vector_store=SQLiteVectorStore(".ragmake/state.db"),
-    embedder=OpenAICompatibleEmbedder(client, model="text-embedding-3-large"),
-    synopsis_compiler=OpenAISynopsisCompiler(client, model="gpt-4o-mini"),
-)
+client = OpenAI()  # reads OPENAI_API_KEY
+db = "ragmake.db"
+compiler = Compiler(SQLiteArtifactStore(db), SQLiteVectorStore(db),
+                    OpenAIEmbedder(client, "text-embedding-3-small"), OpenAINectar(client, "gpt-4o-mini"))
+compiler.ingest(documents)  # same Document list as above
+context = Runtime(compiler).context("What do I need for an enterprise refund?", "support-kb")
 ```
 
-The `OpenAISynopsisCompiler` uses a chat completion to write the nectar from
-representative corpus chunks. The result is stored and reused until the corpus
-changes.
+Rerunning with unchanged documents makes no embedding or chat calls for ingest. Each query
+still embeds its query text.
 
----
+## The payload
 
-## What the agent prompt payload looks like
+`Runtime.context()` returns a plain dict. Output of the local example, long strings and
+numbers trimmed:
 
 ```json
 {
   "query": "What do I need for an enterprise refund?",
   "corpus_id": "support-kb",
-  "content_signature": "a3f9...",
-  "synopsis": "Corpus covers enterprise billing, refund eligibility, and API key management...",
+  "signature": "4a04b188...",
+  "nectar": "Corpus support-kb: 2 documents.\nRecurring terms: workspace, api, console...",
+  "catalog": [
+    {"document_id": "api-access.txt", "title": null, "digest": "Workspace admins can rotate API keys..."},
+    {"document_id": "refund-policy.txt", "title": null, "digest": "Enterprise refunds are allowed..."}
+  ],
   "sources": [
-    {
-      "document_id": "refund-policy.txt",
-      "chunk_id": 0,
-      "score": 0.91,
-      "text": "Enterprise refunds are allowed within 30 days..."
-    }
+    {"document_id": "refund-policy.txt", "title": null, "chunk_id": 0, "score": 0.114,
+     "char_start": 0, "char_end": 81, "text": "Enterprise refunds are allowed within 30 days..."},
+    {"document_id": "api-access.txt", "title": null, "chunk_id": 0, "score": 0.0,
+     "char_start": 0, "char_end": 60, "text": "Workspace admins can rotate API keys..."}
   ]
 }
 ```
 
-`synopsis` is the nectar. It is always present, always current, always
-independent of the query. The agent can orient itself before reading a single
-chunk.
+`nectar` and `catalog` are query-independent. `sources` is the evidence. A `session` key is
+added when `session_id` is passed.
 
----
+## Sessions
 
-## CLI
-
-The demo entry point ingests plain UTF-8 text files into a persistent SQLite
-state directory and renders a prompt payload for a query:
-
-```bash
-ragmake-demo --query "What changed in the refund policy?" docs/refund.txt docs/api.txt
-```
-
-Options:
-
-- `--corpus` — corpus id (default: `demo`)
-- `--state-dir` — where the SQLite file lives
-
-The benchmark compares stateful ingest against a stateless rebuild across cold,
-warm, and changed-document phases:
-
-```bash
-ragmake-benchmark --documents 200 --change-fraction 0.1
-ragmake-benchmark --documents 200 --change-fraction 0.1 --backend sqlite --format json
-```
-
-![Benchmark: stateful vs stateless](docs/assets/stateful-rag-benchmark.svg)
-
----
-
-## Included implementations
-
-**Core interfaces** — implement any of these to swap a backend:
-
-- `ArtifactStore` — read/write/iterate JSON artifacts
-- `Embedder` — embed a batch of texts
-- `VectorStore` — upsert, delete, list, search chunks
-- `SynopsisCompiler` — compile nectar from corpus chunks
-
-**Local defaults** (zero extra dependencies):
-
-- `FileArtifactStore` — JSON files on disk, easy to inspect
-- `InMemoryArtifactStore` — tests and ephemeral runs
-- `InMemoryVectorStore` — tests and ephemeral runs
-- `HashingEmbedder` — deterministic fallback for local demos and tests
-- `HeuristicSynopsisCompiler` — LLM-free nectar for local demos and tests
-- `SessionStateManager` — per-session learned concepts, entities, and intents
-
-**Optional adapters:**
-
-- `OpenAICompatibleEmbedder` — OpenAI or Azure OpenAI embeddings
-- `OpenAISynopsisCompiler` — LLM-backed nectar via chat completions
-- `SQLiteArtifactStore` / `SQLiteVectorStore` — durable local backend, one file
-- `AzureBlobArtifactStore` / `AzureAISearchVectorStore` — Azure cloud backend
-- `PostgresArtifactStore` / `PgVectorStore` — Postgres + pgvector backend
-
----
-
-## Session memory
-
-ragmake can optionally carry per-session state into the prompt payload — learned
-concepts, discussed entities, recent intents, and recent decisions. This lets
-the agent layer short-term conversational memory on top of the long-term corpus
-memory (nectar).
+Per-session memory is optional and sits beside the corpus memory:
 
 ```python
-from stateful_rag import SessionStateManager
+from ragmake import Compiler, HashingEmbedder, HeuristicNectar, MemoryArtifactStore, MemoryVectorStore, Runtime, SessionStore
 
-session_manager = SessionStateManager(artifact_store)
-runtime = StatefulRAGRuntime(..., session_manager=session_manager)
-
-session_manager.record_learning(
-    "customer-42",
-    summary="User is handling enterprise billing questions.",
-    concepts=["enterprise refunds", "invoice workflow"],
-    entities=["Acme Corp"],
-)
-
-context = runtime.build_context(
-    "What do I need for an enterprise refund?",
-    corpus_id="support-kb",
-    session_id="customer-42",
-)
-# payload["session"] now carries learned_concepts, discussed_entities,
-# recent_intents, recent_decisions
+store = MemoryArtifactStore()
+compiler = Compiler(store, MemoryVectorStore(), HashingEmbedder(), HeuristicNectar())
+sessions = SessionStore(store)
+sessions.record("customer-42", "question", "Asked how enterprise refunds work.",
+                concepts=["enterprise refunds"], entities=["Acme Corp"])
+context = Runtime(compiler, sessions).context("What do I need for an enterprise refund?", "support-kb",
+                                              session_id="customer-42")
+# context["session"] == {"concepts": [...], "entities": [...], "recent": {"question": [...]}}
 ```
 
----
+## Backends
 
-## Current limits
+| Interface | Implementations |
+| --- | --- |
+| `ArtifactStore` (JSON key/value) | `FileArtifactStore`, `MemoryArtifactStore` (`ragmake`); `SQLiteArtifactStore` (`ragmake.adapters.sqlite`); `PostgresArtifactStore` (`ragmake.adapters.pgvector`); `AzureBlobArtifactStore` (`ragmake.adapters.azure`) |
+| `VectorStore` | `MemoryVectorStore` (`ragmake`); `SQLiteVectorStore` (`ragmake.adapters.sqlite`); `PgVectorStore` (`ragmake.adapters.pgvector`); `AzureAISearchVectorStore` (`ragmake.adapters.azure`) |
+| `Embedder` | `HashingEmbedder` (`ragmake`); `OpenAIEmbedder` (`ragmake.adapters.openai`) |
+| `NectarCompiler` | `HeuristicNectar` (`ragmake`); `OpenAINectar` (`ragmake.adapters.openai`) |
 
-- `WordChunker` is word-based, not tokenizer-aware.
-- `HashingEmbedder` and `HeuristicSynopsisCompiler` are for tests and local demos, not production.
-- Omitting a document from a later ingest does not delete it; the compiler only updates documents you pass in.
-- `SQLiteVectorStore` uses Python-side cosine search — suitable for local and moderate corpus sizes.
+To add a backend, implement the matching Protocol in `ragmake/interfaces.py`. `Embedder` and
+`NectarCompiler` also need a `name` that changes whenever their output would.
 
----
+## Benchmark
 
-## Reference
+`ragmake-benchmark` compares stateful ingest with a stateless rebuild. Phases: `cold` (first
+ingest), `warm` (unchanged reingest), `changed` (reingest after 10% of documents were edited),
+`stateless` (rebuild of the edited corpus from nothing).
 
-Full architecture, artifact model, adapter notes, persistent local walkthrough,
-and benchmark behavior:
+```bash
+ragmake-benchmark --documents 200       # sqlite backend; also --backend memory, --json
+```
 
-- [docs/reference.md](docs/reference.md)
+Real output of `PYTHONPATH=. python -m ragmake.benchmark --documents 200`:
 
----
+```
+sqlite: 200 documents, 20 changed
+phase             processed          skipped  chunks_upserted         embedded          digests          reduces        ingest_ms
+cold                    200                0              799              799              200                1            850.3
+warm                      0              200                0                0                0                0              5.1
+changed                  20              180               79               20               20                1             55.5
+stateless               200                0              799              799              200                1            778.0
+embedding reuse in changed phase: 97.5% of stateless
+```
+
+## Limits
+
+- `HashingEmbedder` and `HeuristicNectar` are deterministic offline stand-ins for tests and
+  demos. They match words, not meaning.
+- `SQLiteVectorStore` is brute force: each query scores every chunk in the corpus in Python.
+- Chunk sizes count whitespace-separated words, not tokens.
+- Azure scores are Azure's relevance scores, not raw cosine. The pgvector and Azure adapters
+  are only import-tested.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
