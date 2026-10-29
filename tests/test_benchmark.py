@@ -1,39 +1,37 @@
-import sys
+import contextlib
+import io
+import json
 import unittest
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from stateful_rag.benchmark import render_summary, run_benchmark
+from ragmake.benchmark import main, run_benchmark
 
 
 class BenchmarkTests(unittest.TestCase):
-    def test_changed_document_savings_use_ingest_embeddings(self):
-        report = run_benchmark(document_count=12, words_per_document=80, change_fraction=0.25, backend="memory", top_k=3)
-        savings = report.changed_document_savings
-        phase_map = {phase.name: phase for phase in report.phases}
+    def test_stateful_reuse(self):
+        r = run_benchmark(documents=12, change_fraction=0.25, backend="memory")
+        cold, warm, changed, stateless = (r["phases"][k] for k in ("cold", "warm", "changed", "stateless"))
+        self.assertEqual((warm["embedded"], warm["digests"], warm["reduces"], warm["skipped"]), (0, 0, 0, 12))
+        self.assertEqual((changed["processed"], changed["digests"], changed["reduces"]), (3, 3, 1))
+        self.assertLess(changed["embedded"], changed["chunks_upserted"])
+        self.assertGreater(stateless["embedded"], changed["embedded"])
+        self.assertGreater(cold["chunks_upserted"], 12 * 2)
+        self.assertGreater(r["embedding_reuse"], 0.5)
 
-        self.assertEqual(savings.changed_documents, 3)
-        self.assertEqual(savings.unchanged_documents, 9)
-        self.assertEqual(report.warm_skip_rate, 1.0)
-        self.assertEqual(phase_map["stateful_warm"].processed_documents, 0)
-        self.assertEqual(phase_map["stateful_changed"].query_embedded_texts, 1)
-        self.assertEqual(phase_map["stateless_changed"].query_embedded_texts, 1)
-        self.assertEqual(
-            savings.embedded_texts_avoided,
-            phase_map["stateless_changed"].ingest_embedded_texts - phase_map["stateful_changed"].ingest_embedded_texts,
-        )
+    def run_main(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["--documents", "6", "--backend", "sqlite", *argv])
+        return out.getvalue()
 
-    def test_render_summary_focuses_on_changed_path(self):
-        report = run_benchmark(document_count=10, words_per_document=60, change_fraction=0.2, backend="memory", top_k=2)
-        summary = render_summary(report)
+    def test_main_formats(self):
+        self.assertEqual(json.loads(self.run_main("--json"))["documents"], 6)
+        text = self.run_main()
+        self.assertEqual(len(text.splitlines()), 7)
+        self.assertIn("embedding reuse", text)
 
-        self.assertIn("Changed-document savings", summary)
-        self.assertIn("document reuse:", summary)
-        self.assertIn("embedding reuse:", summary)
-        self.assertIn("Changed-path detail", summary)
+    def test_invalid_fraction(self):
+        with self.assertRaises(ValueError):
+            run_benchmark(change_fraction=1.5)
 
 
 if __name__ == "__main__":
