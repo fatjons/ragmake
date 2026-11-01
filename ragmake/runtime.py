@@ -17,7 +17,7 @@ class Runtime:
         if nectar and nectar.embedder != name:
             raise ValueError(f"corpus {corpus_id!r} was built with embedder {nectar.embedder!r}, not {name!r}; "
                              "re-ingest or use the same embedder")
-        vector = self.compiler.embedder.embed_texts([query])[0]
+        vector = self.compiler.embedder.embed_texts([query], query=True)[0]
         return self.compiler.vectors.search(corpus_id, vector, top_k)
 
     def context(self, query: str, corpus_id: str, *, top_k: int = 5, session_id: str | None = None,

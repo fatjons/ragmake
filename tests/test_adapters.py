@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace as NS
 
 from ragmake.adapters.openai import OpenAIEmbedder, OpenAINectar
+from ragmake.adapters.sentence_transformers import SentenceTransformerEmbedder
 from ragmake.adapters.sqlite import SQLiteArtifactStore, SQLiteVectorStore
 from ragmake.models import Chunk, Document
 
@@ -63,6 +64,39 @@ class SQLiteTests(unittest.TestCase):
         v.close()
 
 
+class FakeST:
+    def __init__(self):
+        self.calls = []
+
+    def _encode(self, kind, texts, **kw):
+        self.calls.append((kind, texts, kw))
+        return NS(tolist=lambda: [[1.0]] * len(texts))
+
+    def encode_query(self, texts, **kw):
+        return self._encode("query", texts, **kw)
+
+    def encode_document(self, texts, **kw):
+        return self._encode("document", texts, **kw)
+
+
+class SentenceTransformerTests(unittest.TestCase):
+    def test_routing_and_prompts(self):
+        m = FakeST()
+        e = SentenceTransformerEmbedder(m, model_id="x", query_prompt="Q: ", batch_size=4)
+        self.assertEqual(e.embed_texts(["a"], query=True), [[1.0]])
+        e.embed_texts(["b", "c"])
+        opts = {"normalize_embeddings": True, "batch_size": 4, "convert_to_numpy": True}
+        self.assertEqual(m.calls, [("query", ["a"], {"prompt": "Q: ", **opts}), ("document", ["b", "c"], opts)])
+
+    def test_name_and_model_id(self):
+        names = {SentenceTransformerEmbedder(FakeST(), model_id="x", **kw).name
+                 for kw in ({}, {"dimensions": 8}, {"query_prompt": "q"}, {"document_prompt": "d"})}
+        self.assertEqual(len(names), 4)
+        self.assertTrue(names.pop().startswith("st:x:"))
+        with self.assertRaises(ValueError):
+            SentenceTransformerEmbedder(FakeST())
+
+
 class OpenAITests(unittest.TestCase):
     def test_embedder_batches(self):
         calls = []
@@ -77,6 +111,21 @@ class OpenAITests(unittest.TestCase):
         self.assertEqual([len(c[1]) for c in calls], [2, 1])
         self.assertEqual(calls[0][2], {"dimensions": 8})
         self.assertEqual(OpenAIEmbedder(None, "m").name, "openai:m:native")
+
+    def test_embedder_prefixes(self):
+        sent = []
+
+        def create(model, input, **kw):
+            sent.append(input)
+            return NS(data=[NS(index=i, embedding=[0.0]) for i in range(len(input))])
+
+        client = NS(embeddings=NS(create=create))
+        e = OpenAIEmbedder(client, "m", query_prefix="q: ", document_prefix="d: ")
+        e.embed_texts(["a"], query=True)
+        e.embed_texts(["a"])
+        self.assertEqual(sent, [["q: a"], ["d: a"]])
+        names = {OpenAIEmbedder(None, "m").name, e.name, OpenAIEmbedder(None, "m", query_prefix="q: ").name}
+        self.assertEqual(len(names), 3)
 
     def nectar(self, **kw):
         self.prompts = []

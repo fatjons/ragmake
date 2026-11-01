@@ -30,6 +30,7 @@ postgres = [
   "psycopg[binary]>=3.1.0",
 ]
 numpy = ["numpy>=1.24"]
+local = ["sentence-transformers>=5.0"]
 
 [project.scripts]
 ragmake = "ragmake.cli:main"

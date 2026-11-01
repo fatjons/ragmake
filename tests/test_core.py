@@ -10,9 +10,9 @@ class CountingEmbedder(HashingEmbedder):
         super().__init__(dimensions)
         self.calls = 0
 
-    def embed_texts(self, texts):
+    def embed_texts(self, texts, query=False):
         self.calls += 1
-        return super().embed_texts(texts)
+        return super().embed_texts(texts, query)
 
 
 def make(embedder=None, artifacts=None, vectors=None):
@@ -164,6 +164,20 @@ class RuntimeTests(unittest.TestCase):
             Runtime(make(CountingEmbedder(64), artifacts, vectors)).search("Widget1 gadget1", "c")
         hits = Runtime(make(CountingEmbedder(256), artifacts, vectors)).search("Widget1 gadget1", "c")
         self.assertEqual(hits[0].chunk.document_id, "d1")
+
+    def test_query_flag(self):
+        seen = []
+
+        class Recording(HashingEmbedder):
+            def embed_texts(self, texts, query=False):
+                seen.append(query)
+                return super().embed_texts(texts, query)
+
+        c = make(Recording())
+        c.ingest(docs(2))
+        Runtime(c).search("Widget1", "c")
+        self.assertEqual(seen[-1], True)
+        self.assertFalse(any(seen[:-1]))
 
 
 if __name__ == "__main__":

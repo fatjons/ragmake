@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Sequence
 
 from ragmake.models import Document
@@ -15,17 +17,24 @@ _OVERVIEW = (
 
 
 class OpenAIEmbedder:
-    """Works with openai.OpenAI and openai.AzureOpenAI clients."""
+    """Works with openai.OpenAI and openai.AzureOpenAI clients, and with any OpenAI-compatible /v1/embeddings
+    server: pass e.g. `OpenAI(base_url="http://localhost:11434/v1", api_key="x")`."""
 
-    def __init__(self, client: Any, model: str, *, dimensions: int | None = None, batch_size: int = 128):
+    def __init__(self, client: Any, model: str, *, dimensions: int | None = None, query_prefix: str = "",
+                 document_prefix: str = "", batch_size: int = 128):
         self.client, self.model, self.dimensions, self.batch_size = client, model, dimensions, batch_size
+        self.query_prefix, self.document_prefix = query_prefix, document_prefix
         self.name = f"openai:{model}:{dimensions or 'native'}"
+        if query_prefix or document_prefix:
+            self.name += ":" + hashlib.sha256(json.dumps([query_prefix, document_prefix]).encode()).hexdigest()[:8]
 
-    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+    def embed_texts(self, texts: Sequence[str], query: bool = False) -> list[list[float]]:
+        prefix = self.query_prefix if query else self.document_prefix
+        texts = [prefix + t for t in texts]
         extra = {"dimensions": self.dimensions} if self.dimensions else {}
         out: list[list[float]] = []
         for i in range(0, len(texts), self.batch_size):
-            resp = self.client.embeddings.create(model=self.model, input=list(texts[i : i + self.batch_size]), **extra)
+            resp = self.client.embeddings.create(model=self.model, input=texts[i : i + self.batch_size], **extra)
             out += [d.embedding for d in sorted(resp.data, key=lambda d: d.index)]
         return out
 

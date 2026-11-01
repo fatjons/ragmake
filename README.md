@@ -35,7 +35,8 @@ Python 3.11+. The core is stdlib only.
 
 ```bash
 pip install -e .                 # core
-pip install -e '.[openai]'       # OpenAI embeddings and nectar
+pip install -e '.[openai]'       # OpenAI and OpenAI-compatible embeddings and nectar
+pip install -e '.[local]'        # local Hugging Face embedders (sentence-transformers)
 pip install -e '.[postgres]'     # pgvector + psycopg
 pip install -e '.[azure]'        # Azure Blob + Azure AI Search
 ```
@@ -50,9 +51,26 @@ ragmake nectar                        # print the corpus nectar and catalog
 ```
 
 Global flags go before the subcommand: `--state DIR` (default `.ragmake`, holds `ragmake.db`),
-`--corpus ID` (default `default`), and `--openai`, which reads `OPENAI_API_KEY`,
-`OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`) and `OPENAI_CHAT_MODEL`
-(default `gpt-4o-mini`).
+`--corpus ID` (default `default`), and:
+
+- `--embedder SPEC`: `hashing` (default), `openai:MODEL` or `st:MODEL_ID`.
+- `--nectar SPEC`: `heuristic` (default) or `openai:MODEL`.
+- `--base-url URL`: OpenAI-compatible server for `openai:` specs. Without `OPENAI_API_KEY`, the key is `none`.
+- `--dimensions N`, `--query-prefix TEXT`, `--document-prefix TEXT`: output size, and the text prefixes
+  (`openai:`) or prompts (`st:`) for asymmetric models. They are part of the embedder name.
+
+## Embedders
+
+```bash
+ragmake --embedder openai:text-embedding-3-small ingest docs/          # OpenAI, reads OPENAI_API_KEY
+ragmake --embedder openai:nomic-embed-text --base-url http://localhost:11434/v1 ingest docs/   # Ollama, vLLM, ...
+pip install -e '.[local]'
+ragmake --embedder st:google/embeddinggemma-2 --dimensions 256 ingest docs/   # local Hugging Face model
+```
+
+Queries are embedded with `query=True`, so asymmetric models (e5, bge, Qwen3, EmbeddingGemma) prompt
+queries and documents differently; `st:` models use their own configured prompts unless you override them.
+Any object with `name` and `embed_texts(texts, query=False)` works.
 
 A query with a different embedder than the one that built the state raises an error. Re-ingest
 to switch embedders; each switch rebuilds everything.
@@ -141,7 +159,7 @@ context = Runtime(compiler, sessions).context("What do I need for an enterprise 
 | --- | --- |
 | `ArtifactStore` (JSON key/value) | `FileArtifactStore`, `MemoryArtifactStore` (`ragmake`); `SQLiteArtifactStore` (`ragmake.adapters.sqlite`); `PostgresArtifactStore` (`ragmake.adapters.pgvector`); `AzureBlobArtifactStore` (`ragmake.adapters.azure`) |
 | `VectorStore` | `MemoryVectorStore` (`ragmake`); `SQLiteVectorStore` (`ragmake.adapters.sqlite`); `PgVectorStore` (`ragmake.adapters.pgvector`); `AzureAISearchVectorStore` (`ragmake.adapters.azure`) |
-| `Embedder` | `HashingEmbedder` (`ragmake`); `OpenAIEmbedder` (`ragmake.adapters.openai`) |
+| `Embedder` | `HashingEmbedder` (`ragmake`); `OpenAIEmbedder` (`ragmake.adapters.openai`; any OpenAI-compatible server); `SentenceTransformerEmbedder` (`ragmake.adapters.sentence_transformers`; local Hugging Face models) |
 | `NectarCompiler` | `HeuristicNectar` (`ragmake`); `OpenAINectar` (`ragmake.adapters.openai`) |
 
 To add a backend, implement the matching Protocol in `ragmake/interfaces.py`. `Embedder` and

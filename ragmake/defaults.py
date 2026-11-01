@@ -23,7 +23,7 @@ class HashingEmbedder:
         self.dimensions = dimensions
         self.name = f"hashing-{dimensions}"
 
-    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]:
+    def embed_texts(self, texts: Sequence[str], query: bool = False) -> list[list[float]]:
         out = []
         for text in texts:
             vec = [0.0] * self.dimensions

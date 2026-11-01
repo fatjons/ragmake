@@ -17,7 +17,9 @@ class ArtifactStore(Protocol):
 class Embedder(Protocol):
     name: str  # embedding cache namespace: must change whenever vectors would
 
-    def embed_texts(self, texts: Sequence[str]) -> list[list[float]]: ...
+    # query=True embeds search queries; asymmetric models (e5, bge, Qwen3, EmbeddingGemma) prompt them
+    # differently from documents. Symmetric embedders ignore it.
+    def embed_texts(self, texts: Sequence[str], query: bool = False) -> list[list[float]]: ...
 
 
 class VectorStore(Protocol):
