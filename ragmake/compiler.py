@@ -36,6 +36,9 @@ class Compiler:
     def _ledger_path(self, corpus_id: str, document_id: str) -> str:
         return f"{self.ns}/ledger/{_q(corpus_id)}/{_q(document_id)}.json"
 
+    def _nectar_path(self, corpus_id: str) -> str:
+        return f"{self.ns}/nectar/{_q(corpus_id)}.json"
+
     def _entries(self, corpus_id: str) -> list[LedgerEntry]:
         prefix = f"{self.ns}/ledger/{_q(corpus_id)}/"  # trailing "/" so corpus "abc" misses "abcd"
         return sorted((LedgerEntry(**d) for _, d in self.artifacts.iter_json(prefix)), key=lambda e: e.document_id)
@@ -45,7 +48,7 @@ class Compiler:
         return LedgerEntry(**data) if data else None
 
     def load_nectar(self, corpus_id: str) -> Nectar | None:
-        data = self.artifacts.read_json(f"{self.ns}/nectar/{_q(corpus_id)}.json")
+        data = self.artifacts.read_json(self._nectar_path(corpus_id))
         return Nectar(**data) if data else None
 
     def ingest(self, documents: Iterable[Document], *, force: bool = False, prune: bool = False) -> IngestReport:
@@ -62,7 +65,7 @@ class Compiler:
                 if self._remove(corpus_id, gone, report):
                     touched.add(corpus_id)
         for corpus_id in sorted(touched):
-            if self._refresh(corpus_id, False)[1]:
+            if self._refresh(corpus_id, force)[1]:
                 report.nectars_rebuilt.append(corpus_id)
         return report
 
@@ -127,9 +130,8 @@ class Compiler:
     def _refresh(self, corpus_id: str, force: bool) -> tuple[Nectar | None, bool]:
         """Return (nectar, rebuilt)."""
         entries = self._entries(corpus_id)
-        path = f"{self.ns}/nectar/{_q(corpus_id)}.json"
         if not entries:
-            self.artifacts.delete(path)
+            self.artifacts.delete(self._nectar_path(corpus_id))
             return None, False
         signature = _sha(json.dumps([[e.document_id, e.document_hash] for e in entries]))
         stored = self.load_nectar(corpus_id)
@@ -140,5 +142,5 @@ class Compiler:
         catalog = [{"document_id": e.document_id, "title": e.title, "digest": e.digest} for e in entries]
         nectar = Nectar(corpus_id, signature, len(entries), sum(len(e.chunk_keys) for e in entries),
                         text, catalog, self.embedder.name, _utcnow())
-        self.artifacts.write_json(path, asdict(nectar))
+        self.artifacts.write_json(self._nectar_path(corpus_id), asdict(nectar))
         return nectar, True

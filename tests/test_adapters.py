@@ -97,15 +97,19 @@ class SentenceTransformerTests(unittest.TestCase):
             SentenceTransformerEmbedder(FakeST())
 
 
+def embeddings_client(calls):
+    """Records (model, inputs, kwargs); answers out of order with each text's length as its vector."""
+    def create(model, input, **kw):
+        calls.append((model, list(input), kw))
+        return NS(data=[NS(index=i, embedding=[float(len(t))]) for i, t in reversed(list(enumerate(input)))])
+
+    return NS(embeddings=NS(create=create))
+
+
 class OpenAITests(unittest.TestCase):
     def test_embedder_batches(self):
         calls = []
-
-        def create(model, input, **kw):
-            calls.append((model, list(input), kw))
-            return NS(data=[NS(index=i, embedding=[float(len(t))]) for i, t in reversed(list(enumerate(input)))])
-
-        e = OpenAIEmbedder(NS(embeddings=NS(create=create)), "m", dimensions=8, batch_size=2)
+        e = OpenAIEmbedder(embeddings_client(calls), "m", dimensions=8, batch_size=2)
         self.assertEqual(e.name, "openai:m:8")
         self.assertEqual(e.embed_texts(["a", "bb", "ccc"]), [[1.0], [2.0], [3.0]])
         self.assertEqual([len(c[1]) for c in calls], [2, 1])
@@ -113,17 +117,11 @@ class OpenAITests(unittest.TestCase):
         self.assertEqual(OpenAIEmbedder(None, "m").name, "openai:m:native")
 
     def test_embedder_prefixes(self):
-        sent = []
-
-        def create(model, input, **kw):
-            sent.append(input)
-            return NS(data=[NS(index=i, embedding=[0.0]) for i in range(len(input))])
-
-        client = NS(embeddings=NS(create=create))
-        e = OpenAIEmbedder(client, "m", query_prefix="q: ", document_prefix="d: ")
+        calls = []
+        e = OpenAIEmbedder(embeddings_client(calls), "m", query_prefix="q: ", document_prefix="d: ")
         e.embed_texts(["a"], query=True)
         e.embed_texts(["a"])
-        self.assertEqual(sent, [["q: a"], ["d: a"]])
+        self.assertEqual([c[1] for c in calls], [["q: a"], ["d: a"]])
         names = {OpenAIEmbedder(None, "m").name, e.name, OpenAIEmbedder(None, "m", query_prefix="q: ").name}
         self.assertEqual(len(names), 3)
 
@@ -157,6 +155,11 @@ class OpenAITests(unittest.TestCase):
         self.assertNotIn("old", "".join(self.prompts[:3]))
         self.assertIn("- part 1: out1", self.prompts[3])
         self.assertIn("old", self.prompts[3])
+
+    def test_reduce_terminates_when_lines_exceed_budget(self):
+        n = self.nectar(budget_chars=10)
+        n.reduce("c", [("a", "x" * 50), ("b", "y" * 50)], None)  # no batching can shrink this: one final call
+        self.assertEqual(len(self.prompts), 1)
 
 
 class ImportTests(unittest.TestCase):

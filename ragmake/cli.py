@@ -7,7 +7,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .adapters.sqlite import SQLiteArtifactStore, SQLiteVectorStore
-from .chunking import Chunker
 from .compiler import Compiler
 from .defaults import HashingEmbedder, HeuristicNectar
 from .models import Document
@@ -84,7 +83,7 @@ def main(argv: list[str] | None = None) -> None:
     state = Path(args.state)
     state.mkdir(parents=True, exist_ok=True)
     db = state / "ragmake.db"
-    compiler = Compiler(SQLiteArtifactStore(db), SQLiteVectorStore(db), _embedder(args), _nectar(args), Chunker())
+    compiler = Compiler(SQLiteArtifactStore(db), SQLiteVectorStore(db), _embedder(args), _nectar(args))
 
     if args.command == "ingest":
         out = asdict(compiler.ingest(_documents(args.paths, args.corpus), prune=args.prune))

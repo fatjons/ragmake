@@ -33,6 +33,8 @@ class CompilerTests(unittest.TestCase):
         r = c.ingest(docs(3))
         self.assertEqual((r.processed, r.skipped, r.embedded, r.nectars_rebuilt), (0, 3, 0, []))
         self.assertEqual(c.embedder.calls, calls)
+        r = c.ingest(docs(3), force=True)  # force rebuilds everything, nectar included; embeddings stay cached
+        self.assertEqual((r.processed, r.embedded, r.nectars_rebuilt), (3, 0, ["c"]))
 
     def test_changed_doc_only(self):
         c = make()

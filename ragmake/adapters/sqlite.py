@@ -8,6 +8,7 @@ from operator import mul
 from typing import Any, Iterable, Sequence
 
 from ragmake.models import Chunk, Hit
+from ragmake.storage import normalize
 
 _COLS = "corpus_id, document_id, chunk_id, key, text, char_start, char_end, content_hash, metadata"
 
@@ -20,18 +21,15 @@ def _connect(path: str, schema: str) -> sqlite3.Connection:
     return conn
 
 
-def _unit(vec: Sequence[float]) -> array:
-    norm = sum(x * x for x in vec) ** 0.5 or 1.0
-    return array("f", (x / norm for x in vec))
-
-
 def _chunk(row: Sequence[Any]) -> Chunk:
     return Chunk(*row[:8], json.loads(row[8]))
 
 
 class SQLiteArtifactStore:
     def __init__(self, db_path: str):
-        self.conn = _connect(db_path, "CREATE TABLE IF NOT EXISTS rag_artifacts (path TEXT PRIMARY KEY, data TEXT NOT NULL)")
+        self.conn = _connect(
+            db_path, "CREATE TABLE IF NOT EXISTS rag_artifacts (path TEXT PRIMARY KEY, data TEXT NOT NULL)"
+        )
 
     def read_json(self, path: str) -> Any | None:
         row = self.conn.execute("SELECT data FROM rag_artifacts WHERE path = ?", (path,)).fetchone()
@@ -71,20 +69,23 @@ class SQLiteVectorStore:
     def upsert_chunks(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
         rows = [
             (c.corpus_id, c.document_id, c.chunk_id, c.key, c.text, c.char_start, c.char_end, c.content_hash,
-             json.dumps(c.metadata), _unit(v).tobytes())
+             json.dumps(c.metadata), array("f", normalize(v)).tobytes())
             for c, v in zip(chunks, vectors, strict=True)
         ]
         with self.conn:
-            self.conn.executemany(f"INSERT OR REPLACE INTO rag_chunks ({_COLS}, vector) VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+            self.conn.executemany(
+                f"INSERT OR REPLACE INTO rag_chunks ({_COLS}, vector) VALUES (?,?,?,?,?,?,?,?,?,?)", rows
+            )
 
     def delete_chunks(self, keys: Sequence[str]) -> None:
         with self.conn:
             self.conn.executemany("DELETE FROM rag_chunks WHERE key = ?", [(k,) for k in keys])
 
     def search(self, corpus_id: str, vector: Sequence[float], top_k: int) -> list[Hit]:
-        q = _unit(vector)
+        q = array("f", normalize(vector))
         scored = []
-        for *row, blob in self.conn.execute(f"SELECT {_COLS}, vector FROM rag_chunks WHERE corpus_id = ?", (corpus_id,)):
+        rows = self.conn.execute(f"SELECT {_COLS}, vector FROM rag_chunks WHERE corpus_id = ?", (corpus_id,))
+        for *row, blob in rows:
             v = array("f")
             v.frombytes(blob)
             scored.append((sum(map(mul, q, v)), row))

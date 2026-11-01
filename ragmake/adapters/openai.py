@@ -12,7 +12,8 @@ _DIGEST = (
 )
 _OVERVIEW = (
     "Write a corpus overview from the document digests: scope and purpose, main topics and how documents group, "
-    "key entities and terminology, notable gaps or caveats. Mention document ids where useful. Stay grounded. No preamble."
+    "key entities and terminology, notable gaps or caveats. Mention document ids where useful. Stay grounded. "
+    "No preamble."
 )
 
 
@@ -68,8 +69,9 @@ class OpenAINectar:
                     size = 0
                 batches[-1].append(line)
                 size += len(line)
-            partials = [self._chat(_OVERVIEW, "\n".join(b)) for b in batches]
-            return self.reduce(corpus_id, [(f"part {i}", p) for i, p in enumerate(partials, 1)], previous)
+            if len(batches) < len(lines):  # each round must shrink the input, or the recursion never ends
+                partials = [self._chat(_OVERVIEW, "\n".join(b)) for b in batches]
+                return self.reduce(corpus_id, [(f"part {i}", p) for i, p in enumerate(partials, 1)], previous)
         user = f"Corpus: {corpus_id}\n\n" + "\n".join(lines)
         if previous:
             user += f"\n\nPrevious version, for continuity; prefer current digests:\n{previous}"

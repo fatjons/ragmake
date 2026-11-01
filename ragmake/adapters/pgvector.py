@@ -19,7 +19,7 @@ class _Postgres:
     """One lazily opened autocommit connection; subclasses create their tables in _setup."""
 
     def __init__(self, dsn: str | None, schema: str, table: str, connect: Callable[[], Any] | None):
-        self.dsn, self.connect = dsn, connect
+        self.dsn, self.connect, self.schema = dsn, connect, schema
         self.table = f"{_ident(schema)}.{_ident(table)}"
         self._conn: Any = None
 
@@ -49,7 +49,6 @@ class PostgresArtifactStore(_Postgres):
     def __init__(self, dsn: str | None = None, *, schema: str = "public", table: str = "ragmake_artifacts",
                  connect: Callable[[], Any] | None = None):
         super().__init__(dsn, schema, table, connect)
-        self.schema = schema
 
     def _setup(self, conn: Any) -> None:
         conn.execute(f"CREATE SCHEMA IF NOT EXISTS {self.schema}")
@@ -75,10 +74,11 @@ class PostgresArtifactStore(_Postgres):
 
 
 class PgVectorStore(_Postgres):
-    def __init__(self, dimensions: int, dsn: str | None = None, *, schema: str = "public", table: str = "ragmake_chunks",
-                 connect: Callable[[], Any] | None = None, index: str | None = "hnsw"):
+    def __init__(self, dimensions: int, dsn: str | None = None, *, schema: str = "public",
+                 table: str = "ragmake_chunks", connect: Callable[[], Any] | None = None,
+                 index: str | None = "hnsw"):
         super().__init__(dsn, schema, table, connect)
-        self.schema, self.dimensions, self.index = schema, int(dimensions), _ident(index) if index else None
+        self.dimensions, self.index = int(dimensions), _ident(index) if index else None
 
     def _setup(self, conn: Any) -> None:
         from pgvector.psycopg import register_vector
@@ -95,14 +95,15 @@ class PgVectorStore(_Postgres):
         name = self.table.replace(".", "_")
         conn.execute(f"CREATE INDEX IF NOT EXISTS {name}_corpus ON {self.table} (corpus_id)")
         if self.index:
-            conn.execute(f"CREATE INDEX IF NOT EXISTS {name}_embedding ON {self.table} USING {self.index} (embedding vector_cosine_ops)")
+            conn.execute(f"CREATE INDEX IF NOT EXISTS {name}_embedding ON {self.table} "
+                         f"USING {self.index} (embedding vector_cosine_ops)")
 
     def upsert_chunks(self, chunks: Sequence[Chunk], vectors: Sequence[Sequence[float]]) -> None:
         from pgvector import Vector
 
         update = ", ".join(f"{c} = excluded.{c}" for c in _COLS[:3] + _COLS[4:]) + ", embedding = excluded.embedding"
-        sql = (f"INSERT INTO {self.table} ({', '.join(_COLS)}, embedding) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) "
-               f"ON CONFLICT (key) DO UPDATE SET {update}")
+        sql = (f"INSERT INTO {self.table} ({', '.join(_COLS)}, embedding) "
+               f"VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) ON CONFLICT (key) DO UPDATE SET {update}")
         rows = [
             (c.corpus_id, c.document_id, c.chunk_id, c.key, c.text, c.char_start, c.char_end, c.content_hash,
              json.dumps(c.metadata), Vector(v))

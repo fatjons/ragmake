@@ -50,7 +50,8 @@ class HeuristicNectar:
         return f"{title}{lead.rstrip('. ')}. Key terms: {terms}"
 
     def reduce(self, corpus_id: str, digests: Sequence[tuple[str, str]], previous: str | None) -> str:
-        recurring = Counter(t for _, d in digests for t in set(d.rpartition("Key terms: ")[2].split(", ")) if t)
+        terms = (d.rpartition("Key terms: ")[2].split(", ") for _, d in digests)
+        recurring = Counter(t for doc_terms in terms for t in dict.fromkeys(doc_terms) if t)  # ordered: ties are stable
         lines = [f"Corpus {corpus_id}: {len(digests)} documents.",
                  "Recurring terms: " + ", ".join(t for t, _ in recurring.most_common(self.max_terms)),
                  "Documents:"]
