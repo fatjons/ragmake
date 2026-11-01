@@ -56,7 +56,12 @@ class OpenAINectar:
 
     def digest(self, document: Document) -> str:
         title = document.title or document.document_id
-        return self._chat(_DIGEST, f"Title: {title}\n\n{document.text[: self.doc_chars]}")
+        n = self.doc_chars
+        parts = [self._chat(_DIGEST, f"Title: {title}\n\n{document.text[i : i + n]}")
+                 for i in range(0, max(len(document.text), 1), n)]
+        if len(parts) == 1:
+            return parts[0]
+        return self._chat(_DIGEST, f"Title: {title}\n\n" + "\n\n".join(parts))  # digest of the window digests
 
     def reduce(self, corpus_id: str, digests: Sequence[tuple[str, str]], previous: str | None) -> str:
         lines = [f"- {doc_id}: {digest}" for doc_id, digest in digests]

@@ -24,6 +24,19 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 
 
+def digest_corpus(corpus_id: str) -> str:
+    """Vector-store namespace holding one vector per document digest."""
+    return f"{corpus_id}#digests"
+
+
+def _digest_chunk(doc: Document, digest: str) -> Chunk:
+    """The digest as a searchable chunk, so Runtime can rank the catalog by query."""
+    digest_hash = _sha(digest)
+    key = hashlib.sha1(f"{doc.corpus_id}\0{doc.document_id}\0digest\0{digest_hash}".encode()).hexdigest()
+    title = {"title": doc.title} if doc.title else {}
+    return Chunk(digest_corpus(doc.corpus_id), doc.document_id, 0, key, digest, 0, 0, digest_hash, title)
+
+
 class Compiler:
     def __init__(self, artifacts: ArtifactStore, vectors: VectorStore, embedder: Embedder,
                  nectar: NectarCompiler, chunker: Chunker | None = None, namespace: str = "ragmake"):
@@ -84,14 +97,16 @@ class Compiler:
         if old and old.document_hash == document_hash and not force:
             report.skipped += 1
             return False
-        chunks = self.chunker.chunk(doc)
+        digest = self.nectar.digest(doc)
+        # The digest key rides in chunk_keys, so stale-key diffing and _remove clean it up with no special case.
+        chunks = self.chunker.chunk(doc) + [_digest_chunk(doc, digest)]
         stale = sorted(set(old.chunk_keys if old else ()) - {c.key for c in chunks})
         vectors = self._embed(chunks, report)
         if stale:
             self.vectors.delete_chunks(stale)
         self.vectors.upsert_chunks(chunks, vectors)
         entry = LedgerEntry(doc.corpus_id, doc.document_id, document_hash, doc.title,
-                            self.nectar.digest(doc), [c.key for c in chunks], _utcnow())
+                            digest, [c.key for c in chunks], _utcnow())
         self.artifacts.write_json(self._ledger_path(doc.corpus_id, doc.document_id), asdict(entry))
         report.processed += 1
         report.chunks_upserted += len(chunks)
@@ -140,7 +155,8 @@ class Compiler:
         text = self.nectar.reduce(corpus_id, [(e.document_id, e.digest) for e in entries],
                                   stored.text if stored else None)
         catalog = [{"document_id": e.document_id, "title": e.title, "digest": e.digest} for e in entries]
-        nectar = Nectar(corpus_id, signature, len(entries), sum(len(e.chunk_keys) for e in entries),
+        chunk_count = sum(len(e.chunk_keys) - 1 for e in entries)  # every entry also holds its digest key
+        nectar = Nectar(corpus_id, signature, len(entries), chunk_count,
                         text, catalog, self.embedder.name, _utcnow())
         self.artifacts.write_json(self._nectar_path(corpus_id), asdict(nectar))
         return nectar, True

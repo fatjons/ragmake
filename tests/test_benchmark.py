@@ -12,9 +12,10 @@ class BenchmarkTests(unittest.TestCase):
         cold, warm, changed, stateless = (r["phases"][k] for k in ("cold", "warm", "changed", "stateless"))
         self.assertEqual((warm["embedded"], warm["digests"], warm["reduces"], warm["skipped"]), (0, 0, 0, 12))
         self.assertEqual((changed["processed"], changed["digests"], changed["reduces"]), (3, 3, 1))
-        self.assertLess(changed["embedded"], changed["chunks_upserted"])
+        digests = changed["processed"]  # one digest vector per processed document is always embedded
+        self.assertLess(changed["embedded"] - digests, changed["chunks_upserted"] - digests)  # CDC: not every chunk
         self.assertGreater(stateless["embedded"], changed["embedded"])
-        self.assertGreater(cold["chunks_upserted"], 12 * 2)
+        self.assertGreater(cold["chunks_upserted"] - 12, 12 * 2)
         self.assertGreater(r["embedding_reuse"], 0.5)
 
     def run_main(self, *argv):

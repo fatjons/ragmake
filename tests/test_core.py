@@ -28,7 +28,8 @@ class CompilerTests(unittest.TestCase):
     def test_cold_then_warm(self):
         c = make()
         r = c.ingest(docs(3))
-        self.assertEqual((r.processed, r.embedded, r.chunks_upserted, r.nectars_rebuilt), (3, 3, 3, ["c"]))
+        # one chunk and one digest vector per document
+        self.assertEqual((r.processed, r.embedded, r.chunks_upserted, r.nectars_rebuilt), (3, 6, 6, ["c"]))
         calls = c.embedder.calls
         r = c.ingest(docs(3))
         self.assertEqual((r.processed, r.skipped, r.embedded, r.nectars_rebuilt), (0, 3, 0, []))
@@ -42,7 +43,7 @@ class CompilerTests(unittest.TestCase):
         d = docs(3)
         d[1].text += " Now with extra words."
         r = c.ingest(d)
-        self.assertEqual((r.processed, r.skipped, r.embedded, r.nectars_rebuilt), (1, 2, 1, ["c"]))
+        self.assertEqual((r.processed, r.skipped, r.embedded, r.nectars_rebuilt), (1, 2, 2, ["c"]))  # chunk + digest
 
     def test_title_and_metadata_changes_count(self):
         c = make()
@@ -50,7 +51,7 @@ class CompilerTests(unittest.TestCase):
         d = docs(2)
         d[0].title = "New title"
         r = c.ingest(d)
-        self.assertEqual((r.processed, r.embedded, r.nectars_rebuilt), (1, 0, ["c"]))
+        self.assertEqual((r.processed, r.embedded, r.nectars_rebuilt), (1, 1, ["c"]))  # only the digest changed
         d[1].metadata = {"k": 1}
         self.assertEqual(c.ingest(d).processed, 1)
 
@@ -58,7 +59,7 @@ class CompilerTests(unittest.TestCase):
         c = make()
         c.ingest(docs(3))
         r = c.ingest(docs(2), prune=True)
-        self.assertEqual((r.removed, r.chunks_deleted, r.nectars_rebuilt), (1, 1, ["c"]))
+        self.assertEqual((r.removed, r.chunks_deleted, r.nectars_rebuilt), (1, 2, ["c"]))
         self.assertIsNone(c.ledger("c", "d2"))
         hits = Runtime(c).search("Widget2 notes gadget2 sprocket2", "c", 10)
         self.assertEqual(sorted(h.chunk.document_id for h in hits), ["d0", "d1"])
@@ -83,7 +84,7 @@ class CompilerTests(unittest.TestCase):
         artifacts = MemoryArtifactStore()
         make(CountingEmbedder(256), artifacts).ingest(docs(3))
         r = make(CountingEmbedder(64), artifacts).ingest(docs(3))
-        self.assertEqual((r.processed, r.embedded, r.nectars_rebuilt), (3, 3, ["c"]))
+        self.assertEqual((r.processed, r.embedded, r.nectars_rebuilt), (3, 6, ["c"]))
         r = make(CountingEmbedder(256), artifacts).ingest(docs(3))
         self.assertEqual((r.processed, r.embedded), (3, 0))
 
@@ -93,6 +94,37 @@ class CompilerTests(unittest.TestCase):
             c.ingest(docs(1, "abc") + docs(2, "abcd"))
             self.assertEqual(c.load_nectar("abc").document_count, 1)
             self.assertEqual(c.load_nectar("abcd").document_count, 2)
+
+    def test_digest_vectors_follow_the_document(self):
+        c = make()
+        c.ingest(docs(3))
+        rt = Runtime(c)
+
+        def ids(query):
+            return [e["document_id"] for e in rt.context(query, "c", catalog_limit=10)["catalog"]]
+
+        self.assertEqual(ids("Widget2 gadget2")[0], "d2")
+        d = docs(3)
+        d[2].text = "Totally different zebra words."
+        c.ingest(d)
+        self.assertEqual(len(c.vectors.search("c#digests", c.embedder.embed_texts(["x"])[0], 10)), 3)  # replaced
+        self.assertEqual(ids("zebra")[0], "d2")
+        self.assertNotIn("gadget2", rt.context("zebra", "c")["catalog"][0]["digest"])
+        c.ingest(docs(2), prune=True)
+        self.assertEqual(sorted(ids("zebra")), ["d0", "d1"])
+        c.remove("c", ["d0"])
+        self.assertEqual(ids("Widget0"), ["d1"])
+        self.assertEqual(len(c.vectors.rows), 2)  # d1's chunk and digest only
+
+    def test_thorough_heuristic_nectar(self):
+        c = make()
+        shared = [Document("c", f"d{i}", f"alpha{i % 7} beta{i % 7} text") for i in range(1000)]
+        c.ingest(shared)
+        text = c.load_nectar("c").text
+        self.assertLessEqual(len(text), 8000)
+        topics = text.split("Topics:\n")[1].split("\nDocuments:")[0].splitlines()
+        self.assertEqual(sum(int(t.split("(")[1].split(" docs")[0]) for t in topics), 1000)
+        self.assertIn("more documents", text)
 
 
 class ChunkerTests(unittest.TestCase):
@@ -150,14 +182,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertIsNone(sessions.summary("nope"))
 
         ctx = rt.context("Widget1 gadget1", "c", top_k=2, session_id="s 1", catalog_limit=2)
-        self.assertEqual(set(ctx), {"query", "corpus_id", "signature", "nectar", "catalog", "sources", "session"})
+        keys = {"query", "corpus_id", "signature", "nectar", "documents", "catalog", "sources", "session"}
+        self.assertEqual(set(ctx), keys)
         self.assertEqual(len(ctx["catalog"]), 2)
+        self.assertEqual((ctx["documents"], ctx["catalog"][0]["document_id"]), (3, "d1"))
+        self.assertEqual(set(ctx["catalog"][0]), {"document_id", "title", "digest", "score"})
         self.assertEqual(ctx["sources"][0]["document_id"], "d1")
         self.assertEqual(set(ctx["sources"][0]),
                          {"document_id", "title", "chunk_id", "score", "char_start", "char_end", "text"})
         self.assertNotIn("session", rt.context("x", "c"))
         empty = rt.context("x", "missing")
-        self.assertEqual((empty["nectar"], empty["catalog"], empty["sources"]), (None, [], []))
+        self.assertEqual((empty["nectar"], empty["catalog"], empty["sources"], empty["documents"]), (None, [], [], 0))
+
+    def test_catalog_is_ranked_by_query_at_scale(self):
+        c = make()
+        c.ingest([Document("c", f"d{i}", f"common filler text {i}" + (" quokka" if i == 73 else ""))
+                  for i in range(100)])
+        ctx = Runtime(c).context("quokka", "c", catalog_limit=5)
+        self.assertEqual((ctx["catalog"][0]["document_id"], ctx["documents"], len(ctx["catalog"])), ("d73", 100, 5))
 
     def test_query_with_other_embedder_raises(self):
         artifacts, vectors = MemoryArtifactStore(), MemoryVectorStore()

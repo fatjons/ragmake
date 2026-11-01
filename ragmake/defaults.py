@@ -50,18 +50,32 @@ class HeuristicNectar:
         return f"{title}{lead.rstrip('. ')}. Key terms: {terms}"
 
     def reduce(self, corpus_id: str, digests: Sequence[tuple[str, str]], previous: str | None) -> str:
-        terms = (d.rpartition("Key terms: ")[2].split(", ") for _, d in digests)
+        terms = [d.rpartition("Key terms: ")[2].split(", ") for _, d in digests]
         recurring = Counter(t for doc_terms in terms for t in dict.fromkeys(doc_terms) if t)  # ordered: ties are stable
-        lines = [f"Corpus {corpus_id}: {len(digests)} documents.",
-                 "Recurring terms: " + ", ".join(t for t, _ in recurring.most_common(self.max_terms)),
-                 "Documents:"]
-        tail = f"- ... and {len(digests)} more documents"  # longest possible; reserved so the budget holds
-        size = sum(len(line) + 1 for line in lines) + len(tail) + 1
-        for i, (doc_id, digest) in enumerate(digests):
-            line = f"- {doc_id}: {digest}"
-            if size + len(line) + 1 > self.budget_chars:
-                lines.append(f"- ... and {len(digests) - i} more documents")
-                break
-            lines.append(line)
-            size += len(line) + 1
-        return "\n".join(lines)
+        topics: dict[str, list[str]] = {}
+        for (doc_id, _), doc_terms in zip(digests, terms):
+            if doc_terms[0]:
+                topics.setdefault(doc_terms[0], []).append(doc_id)
+        head = [f"Corpus {corpus_id}: {len(digests)} documents.",
+                "Recurring terms: " + ", ".join(t for t, _ in recurring.most_common(self.max_terms))]
+        budget = self.budget_chars - sum(len(line) + 1 for line in head) - len("Topics:\n\nDocuments:")
+        shared = sorted((item for item in topics.items() if len(item[1]) > 1), key=lambda kv: -len(kv[1]))
+        topic_lines = _fit([f"- {t} ({len(ids)} docs): {', '.join(ids[:5])}{', ...' if len(ids) > 5 else ''}"
+                            for t, ids in shared], budget // 2, "topics")
+        budget -= sum(len(line) + 1 for line in topic_lines)
+        doc_lines = _fit([f"- {doc_id}: {digest}" for doc_id, digest in digests], budget, "documents")
+        topics_section = ["Topics:", *topic_lines] if topic_lines else []
+        return "\n".join(head + topics_section + ["Documents:"] + doc_lines)
+
+
+def _fit(lines: list[str], budget: int, noun: str) -> list[str]:
+    """The lines that fit in budget chars, ending with '- ... and k more' when they don't all fit."""
+    if sum(len(line) + 1 for line in lines) <= budget:
+        return lines
+    out, size = [], len(f"- ... and {len(lines)} more {noun}") + 1  # longest possible tail, reserved
+    for line in lines:
+        if size + len(line) + 1 > budget:
+            break
+        out.append(line)
+        size += len(line) + 1
+    return out + [f"- ... and {len(lines) - len(out)} more {noun}"]

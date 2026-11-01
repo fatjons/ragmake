@@ -134,10 +134,14 @@ class OpenAITests(unittest.TestCase):
 
         return OpenAINectar(NS(chat=NS(completions=NS(create=create))), "m", **kw)
 
-    def test_digest_truncates(self):
+    def test_digest_windows_long_documents(self):
         n = self.nectar(doc_chars=5)
-        self.assertEqual(n.digest(Document("c", "d", "0123456789", title="T")), "out1")
-        self.assertEqual(self.prompts[0], "Title: T\n\n01234")
+        self.assertEqual(n.digest(Document("c", "d", "01234", title="T")), "out1")
+        self.assertEqual(self.prompts, ["Title: T\n\n01234"])
+        self.prompts.clear()
+        self.assertEqual(n.digest(Document("c", "d", "0123456789ab", title="T")), "out4")  # ceil(12/5) + 1 calls
+        self.assertEqual(self.prompts[:3], ["Title: T\n\n01234", "Title: T\n\n56789", "Title: T\n\nab"])
+        self.assertEqual(self.prompts[3], "Title: T\n\nout1\n\nout2\n\nout3")
 
     def test_reduce_single_call(self):
         n = self.nectar()

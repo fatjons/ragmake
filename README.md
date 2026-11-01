@@ -123,9 +123,10 @@ numbers trimmed:
   "corpus_id": "support-kb",
   "signature": "4a04b188...",
   "nectar": "Corpus support-kb: 2 documents.\nRecurring terms: workspace, api, console...",
+  "documents": 2,
   "catalog": [
-    {"document_id": "api-access.txt", "title": null, "digest": "Workspace admins can rotate API keys..."},
-    {"document_id": "refund-policy.txt", "title": null, "digest": "Enterprise refunds are allowed..."}
+    {"document_id": "refund-policy.txt", "title": null, "digest": "Enterprise refunds are allowed...", "score": 0.31},
+    {"document_id": "api-access.txt", "title": null, "digest": "Workspace admins can rotate API keys...", "score": 0.02}
   ],
   "sources": [
     {"document_id": "refund-policy.txt", "title": null, "chunk_id": 0, "score": 0.114,
@@ -136,8 +137,14 @@ numbers trimmed:
 }
 ```
 
-`nectar` and `catalog` are query-independent. `sources` is the evidence. A `session` key is
-added when `session_id` is passed.
+`nectar` is query-independent. `catalog` holds the `catalog_limit` (default 50) documents whose
+digests best match the query, most relevant first, with their score; `documents` is the total
+count, so the agent knows how much the catalog leaves out. `ragmake nectar` prints the full
+catalog. `sources` is the evidence. A `session` key is added when `session_id` is passed.
+
+Each digest is embedded and stored beside the chunks (in the `<corpus>#digests` namespace),
+so `embedded` and `chunks_upserted` in an ingest report count one extra vector per processed
+document.
 
 ## Sessions
 
@@ -183,11 +190,11 @@ Real output of `PYTHONPATH=. python -m ragmake.benchmark --documents 200`:
 ```
 sqlite: 200 documents, 20 changed
 phase             processed          skipped  chunks_upserted         embedded          digests          reduces        ingest_ms
-cold                    200                0              799              799              200                1            850.3
-warm                      0              200                0                0                0                0              5.1
-changed                  20              180               79               20               20                1             55.5
-stateless               200                0              799              799              200                1            778.0
-embedding reuse in changed phase: 97.5% of stateless
+cold                    200                0              999              999              200                1            904.7
+warm                      0              200                0                0                0                0              4.6
+changed                  20              180               99               40               20                1             67.2
+stateless               200                0              999              999              200                1            930.6
+embedding reuse in changed phase: 96.0% of stateless
 ```
 
 ## Limits
