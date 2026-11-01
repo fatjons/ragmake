@@ -72,6 +72,9 @@ Queries are embedded with `query=True`, so asymmetric models (e5, bge, Qwen3, Em
 queries and documents differently; `st:` models use their own configured prompts unless you override them.
 Any object with `name` and `embed_texts(texts, query=False)` works.
 
+Tested with `Qwen/Qwen3-Embedding-0.6B` and `google/embeddinggemma-2` (full and `--dimensions 256`).
+EmbeddingGemma 2 is multimodal: it needs `pip install "sentence-transformers[image]>=6.1"` even for text.
+
 A query with a different embedder than the one that built the state raises an error. Re-ingest
 to switch embedders; each switch rebuilds everything.
 
