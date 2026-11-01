@@ -15,9 +15,9 @@ class CountingEmbedder(HashingEmbedder):
         return super().embed_texts(texts)
 
 
-def make(embedder=None, artifacts=None):
-    return Compiler(artifacts or MemoryArtifactStore(), MemoryVectorStore(), embedder or CountingEmbedder(),
-                    HeuristicNectar())
+def make(embedder=None, artifacts=None, vectors=None):
+    return Compiler(artifacts or MemoryArtifactStore(), vectors or MemoryVectorStore(),
+                    embedder or CountingEmbedder(), HeuristicNectar())
 
 
 def docs(n, corpus="c", tag=""):
@@ -156,6 +156,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("session", rt.context("x", "c"))
         empty = rt.context("x", "missing")
         self.assertEqual((empty["nectar"], empty["catalog"], empty["sources"]), (None, [], []))
+
+    def test_query_with_other_embedder_raises(self):
+        artifacts, vectors = MemoryArtifactStore(), MemoryVectorStore()
+        make(CountingEmbedder(256), artifacts, vectors).ingest(docs(3))
+        with self.assertRaises(ValueError):
+            Runtime(make(CountingEmbedder(64), artifacts, vectors)).search("Widget1 gadget1", "c")
+        hits = Runtime(make(CountingEmbedder(256), artifacts, vectors)).search("Widget1 gadget1", "c")
+        self.assertEqual(hits[0].chunk.document_id, "d1")
 
 
 if __name__ == "__main__":

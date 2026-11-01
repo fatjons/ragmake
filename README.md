@@ -54,8 +54,8 @@ Global flags go before the subcommand: `--state DIR` (default `.ragmake`, holds 
 `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`) and `OPENAI_CHAT_MODEL`
 (default `gpt-4o-mini`).
 
-Queries must use the same embedder as the ingest that built the state. Never mix `--openai`
-and the default embedder on one state directory: each switch rebuilds everything.
+A query with a different embedder than the one that built the state raises an error. Re-ingest
+to switch embedders; each switch rebuilds everything.
 
 ## Python: local, no dependencies
 

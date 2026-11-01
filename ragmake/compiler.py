@@ -139,6 +139,6 @@ class Compiler:
                                   stored.text if stored else None)
         catalog = [{"document_id": e.document_id, "title": e.title, "digest": e.digest} for e in entries]
         nectar = Nectar(corpus_id, signature, len(entries), sum(len(e.chunk_keys) for e in entries),
-                        text, catalog, _utcnow())
+                        text, catalog, self.embedder.name, _utcnow())
         self.artifacts.write_json(path, asdict(nectar))
         return nectar, True

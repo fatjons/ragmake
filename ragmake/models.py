@@ -55,6 +55,7 @@ class Nectar:
     chunk_count: int
     text: str
     catalog: list[dict[str, Any]]  # [{document_id, title, digest}] sorted by id
+    embedder: str  # name of the embedder that built the vectors; queries must match it
     updated_at: str
 
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .compiler import Compiler
-from .models import Hit
+from .models import Hit, Nectar
 from .session import SessionStore
 
 
@@ -10,6 +10,13 @@ class Runtime:
         self.compiler, self.sessions = compiler, sessions
 
     def search(self, query: str, corpus_id: str, top_k: int = 5) -> list[Hit]:
+        return self._search(self.compiler.load_nectar(corpus_id), query, corpus_id, top_k)
+
+    def _search(self, nectar: Nectar | None, query: str, corpus_id: str, top_k: int) -> list[Hit]:
+        name = self.compiler.embedder.name
+        if nectar and nectar.embedder != name:
+            raise ValueError(f"corpus {corpus_id!r} was built with embedder {nectar.embedder!r}, not {name!r}; "
+                             "re-ingest or use the same embedder")
         vector = self.compiler.embedder.embed_texts([query])[0]
         return self.compiler.vectors.search(corpus_id, vector, top_k)
 
@@ -25,7 +32,7 @@ class Runtime:
             "sources": [{"document_id": h.chunk.document_id, "title": h.chunk.metadata.get("title"),
                          "chunk_id": h.chunk.chunk_id, "score": h.score, "char_start": h.chunk.char_start,
                          "char_end": h.chunk.char_end, "text": h.chunk.text}
-                        for h in self.search(query, corpus_id, top_k)],
+                        for h in self._search(nectar, query, corpus_id, top_k)],
         }
         if session_id and self.sessions and (summary := self.sessions.summary(session_id)):
             payload["session"] = summary
