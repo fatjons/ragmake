@@ -1,0 +1,228 @@
+import tempfile
+import unittest
+
+from ragmake import (Chunker, Compiler, Document, FileArtifactStore, HashingEmbedder, HeuristicNectar,
+                     MemoryArtifactStore, MemoryVectorStore, Runtime, SessionStore)
+
+
+class CountingEmbedder(HashingEmbedder):
+    def __init__(self, dimensions=256):
+        super().__init__(dimensions)
+        self.calls = 0
+
+    def embed_texts(self, texts, query=False):
+        self.calls += 1
+        return super().embed_texts(texts, query)
+
+
+def make(embedder=None, artifacts=None, vectors=None):
+    return Compiler(artifacts or MemoryArtifactStore(), vectors or MemoryVectorStore(),
+                    embedder or CountingEmbedder(), HeuristicNectar())
+
+
+def docs(n, corpus="c", tag=""):
+    return [Document(corpus, f"d{i}", f"Widget{i} notes {tag}. All about gadget{i} and sprocket{i}.") for i in range(n)]
+
+
+class CompilerTests(unittest.TestCase):
+    def test_cold_then_warm(self):
+        c = make()
+        r = c.ingest(docs(3))
+        # one chunk and one digest vector per document
+        self.assertEqual((r.processed, r.embedded, r.chunks_upserted, r.nectars_rebuilt), (3, 6, 6, ["c"]))
+        calls = c.embedder.calls
+        r = c.ingest(docs(3))
+        self.assertEqual((r.processed, r.skipped, r.embedded, r.nectars_rebuilt), (0, 3, 0, []))
+        self.assertEqual(c.embedder.calls, calls)
+        r = c.ingest(docs(3), force=True)  # force rebuilds everything, nectar included; embeddings stay cached
+        self.assertEqual((r.processed, r.embedded, r.nectars_rebuilt), (3, 0, ["c"]))
+
+    def test_changed_doc_only(self):
+        c = make()
+        c.ingest(docs(3))
+        d = docs(3)
+        d[1].text += " Now with extra words."
+        r = c.ingest(d)
+        self.assertEqual((r.processed, r.skipped, r.embedded, r.nectars_rebuilt), (1, 2, 2, ["c"]))  # chunk + digest
+
+    def test_title_and_metadata_changes_count(self):
+        c = make()
+        c.ingest(docs(2))
+        d = docs(2)
+        d[0].title = "New title"
+        r = c.ingest(d)
+        self.assertEqual((r.processed, r.embedded, r.nectars_rebuilt), (1, 1, ["c"]))  # only the digest changed
+        d[1].metadata = {"k": 1}
+        self.assertEqual(c.ingest(d).processed, 1)
+
+    def test_prune(self):
+        c = make()
+        c.ingest(docs(3))
+        r = c.ingest(docs(2), prune=True)
+        self.assertEqual((r.removed, r.chunks_deleted, r.nectars_rebuilt), (1, 2, ["c"]))
+        self.assertIsNone(c.ledger("c", "d2"))
+        hits = Runtime(c).search("Widget2 notes gadget2 sprocket2", "c", 10)
+        self.assertEqual(sorted(h.chunk.document_id for h in hits), ["d0", "d1"])
+
+    def test_remove(self):
+        c = make()
+        c.ingest(docs(3))
+        self.assertEqual(c.remove("c", ["d0", "nope"]), 1)
+        self.assertEqual([e["document_id"] for e in c.load_nectar("c").catalog], ["d1", "d2"])
+        c.remove("c", ["d1", "d2"])
+        self.assertIsNone(c.load_nectar("c"))
+
+    def test_catalog_has_every_document(self):
+        c = make()
+        c.ingest(docs(100))
+        nectar = c.load_nectar("c")
+        self.assertEqual(sorted(e["document_id"] for e in nectar.catalog), sorted(f"d{i}" for i in range(100)))
+        self.assertEqual((nectar.document_count, nectar.chunk_count), (100, 100))
+        self.assertLessEqual(len(nectar.text), 8000)
+
+    def test_recipe_change_rebuilds_and_cache_is_per_embedder(self):
+        artifacts = MemoryArtifactStore()
+        make(CountingEmbedder(256), artifacts).ingest(docs(3))
+        r = make(CountingEmbedder(64), artifacts).ingest(docs(3))
+        self.assertEqual((r.processed, r.embedded, r.nectars_rebuilt), (3, 6, ["c"]))
+        r = make(CountingEmbedder(256), artifacts).ingest(docs(3))
+        self.assertEqual((r.processed, r.embedded), (3, 0))
+
+    def test_corpus_prefix_is_exact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            c = make(artifacts=FileArtifactStore(tmp))
+            c.ingest(docs(1, "abc") + docs(2, "abcd"))
+            self.assertEqual(c.load_nectar("abc").document_count, 1)
+            self.assertEqual(c.load_nectar("abcd").document_count, 2)
+
+    def test_digest_vectors_follow_the_document(self):
+        c = make()
+        c.ingest(docs(3))
+        rt = Runtime(c)
+
+        def ids(query):
+            return [e["document_id"] for e in rt.context(query, "c", catalog_limit=10)["catalog"]]
+
+        self.assertEqual(ids("Widget2 gadget2")[0], "d2")
+        d = docs(3)
+        d[2].text = "Totally different zebra words."
+        c.ingest(d)
+        self.assertEqual(len(c.vectors.search("c#digests", c.embedder.embed_texts(["x"])[0], 10)), 3)  # replaced
+        self.assertEqual(ids("zebra")[0], "d2")
+        self.assertNotIn("gadget2", rt.context("zebra", "c")["catalog"][0]["digest"])
+        c.ingest(docs(2), prune=True)
+        self.assertEqual(sorted(ids("zebra")), ["d0", "d1"])
+        c.remove("c", ["d0"])
+        self.assertEqual(ids("Widget0"), ["d1"])
+        self.assertEqual(len(c.vectors.rows), 2)  # d1's chunk and digest only
+
+    def test_thorough_heuristic_nectar(self):
+        c = make()
+        shared = [Document("c", f"d{i}", f"alpha{i % 7} beta{i % 7} text") for i in range(1000)]
+        c.ingest(shared)
+        text = c.load_nectar("c").text
+        self.assertLessEqual(len(text), 8000)
+        topics = text.split("Topics:\n")[1].split("\nDocuments:")[0].splitlines()
+        self.assertEqual(sum(int(t.split("(")[1].split(" docs")[0]) for t in topics), 1000)
+        self.assertIn("more documents", text)
+
+
+class ChunkerTests(unittest.TestCase):
+    def test_edit_in_last_paragraph_keeps_earlier_chunks(self):
+        def doc(last):
+            paras = [" ".join(f"p{i}w{j}" for j in range(60)) for i in range(5)] + [last]
+            return Document("c", "d", "\n\n".join(paras))
+
+        a, b = (Chunker().chunk(doc(t)) for t in ("tail one", "tail two"))
+        self.assertGreaterEqual(len(a), 2)
+        self.assertEqual([x.content_hash for x in a[:-1]], [x.content_hash for x in b[:-1]])
+        self.assertNotEqual(a[-1].content_hash, b[-1].content_hash)
+
+    def test_oversized_paragraph_windows(self):
+        text = " ".join(f"w{i}" for i in range(500))
+        chunks = Chunker().chunk(Document("c", "d", text, title="T"))
+        self.assertEqual([len(c.text.split()) for c in chunks], [200, 200, 140])
+        self.assertEqual(chunks[1].text, text[chunks[1].char_start:chunks[1].char_end])
+        self.assertEqual(chunks[0].metadata, {"title": "T"})
+
+    def test_invalid_args(self):
+        for kw in ({"max_words": 0}, {"overlap_words": 200}, {"min_words": 201}):
+            with self.assertRaises(ValueError):
+                Chunker(**kw)
+
+
+class StoreTests(unittest.TestCase):
+    def test_file_store(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            s = FileArtifactStore(tmp)
+            for bad in ("../x.json", "a/../x.json", "/x.json"):
+                with self.assertRaises(ValueError):
+                    s.write_json(bad, 1)
+            s.write_json("a/abc/x.json", 1)
+            s.write_json("a/abcd/y.json", 2)
+            self.assertEqual([p for p, _ in s.iter_json("a/abc/")], ["a/abc/x.json"])
+            self.assertEqual([p for p, _ in s.iter_json("a/ab")], ["a/abc/x.json", "a/abcd/y.json"])
+            self.assertEqual(list(s.iter_json("zzz/")), [])
+            s.delete("a/abc/x.json")
+            self.assertIsNone(s.read_json("a/abc/x.json"))
+
+
+class RuntimeTests(unittest.TestCase):
+    def test_context_payload_and_session(self):
+        c = make()
+        c.ingest(docs(3))
+        sessions = SessionStore(c.artifacts, max_events=2)
+        rt = Runtime(c, sessions)
+        sessions.record("s 1", "intent", "find widgets", concepts=["widgets"])
+        sessions.record("s 1", "learning", "one", entities=["acme"])
+        sessions.record("s 1", "learning", "two")
+        sessions.record("s 1", "learning", "three")
+        self.assertEqual(sessions.summary("s 1", recent=1),
+                         {"concepts": ["widgets"], "entities": ["acme"], "recent": {"learning": ["three"]}})
+        self.assertIsNone(sessions.summary("nope"))
+
+        ctx = rt.context("Widget1 gadget1", "c", top_k=2, session_id="s 1", catalog_limit=2)
+        keys = {"query", "corpus_id", "signature", "nectar", "documents", "catalog", "sources", "session"}
+        self.assertEqual(set(ctx), keys)
+        self.assertEqual(len(ctx["catalog"]), 2)
+        self.assertEqual((ctx["documents"], ctx["catalog"][0]["document_id"]), (3, "d1"))
+        self.assertEqual(set(ctx["catalog"][0]), {"document_id", "title", "digest", "score"})
+        self.assertEqual(ctx["sources"][0]["document_id"], "d1")
+        self.assertEqual(set(ctx["sources"][0]),
+                         {"document_id", "title", "chunk_id", "score", "char_start", "char_end", "text"})
+        self.assertNotIn("session", rt.context("x", "c"))
+        empty = rt.context("x", "missing")
+        self.assertEqual((empty["nectar"], empty["catalog"], empty["sources"], empty["documents"]), (None, [], [], 0))
+
+    def test_catalog_is_ranked_by_query_at_scale(self):
+        c = make()
+        c.ingest([Document("c", f"d{i}", f"common filler text {i}" + (" quokka" if i == 73 else ""))
+                  for i in range(100)])
+        ctx = Runtime(c).context("quokka", "c", catalog_limit=5)
+        self.assertEqual((ctx["catalog"][0]["document_id"], ctx["documents"], len(ctx["catalog"])), ("d73", 100, 5))
+
+    def test_query_with_other_embedder_raises(self):
+        artifacts, vectors = MemoryArtifactStore(), MemoryVectorStore()
+        make(CountingEmbedder(256), artifacts, vectors).ingest(docs(3))
+        with self.assertRaises(ValueError):
+            Runtime(make(CountingEmbedder(64), artifacts, vectors)).search("Widget1 gadget1", "c")
+        hits = Runtime(make(CountingEmbedder(256), artifacts, vectors)).search("Widget1 gadget1", "c")
+        self.assertEqual(hits[0].chunk.document_id, "d1")
+
+    def test_query_flag(self):
+        seen = []
+
+        class Recording(HashingEmbedder):
+            def embed_texts(self, texts, query=False):
+                seen.append(query)
+                return super().embed_texts(texts, query)
+
+        c = make(Recording())
+        c.ingest(docs(2))
+        Runtime(c).search("Widget1", "c")
+        self.assertEqual(seen[-1], True)
+        self.assertFalse(any(seen[:-1]))
+
+
+if __name__ == "__main__":
+    unittest.main()
